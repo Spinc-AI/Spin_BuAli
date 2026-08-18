@@ -1,6 +1,33 @@
+# --- Python ---
 __pycache__/
-*.pyc
-.env
-*.wav
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Virtual environments ---
 .venv/
 venv/
+env/
+
+# --- Secrets / environment ---
+.env
+.env.*
+!.env.example
+
+# --- Model weights (download locally, never commit) ---
+*.pt
+*.pth
+*.bin
+*.h5
+*.onnx
+*.ckpt
+*.gguf
+*.safetensors
+
+# --- stt/ and core_llm/ runtime caches ---
+stt/models/
+*.wav
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db

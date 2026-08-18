@@ -2,7 +2,7 @@
 
 سرویس <span dir="ltr">HTTP</span> سبک و تک‌منظوره — تبدیل گزارش رادیولوژیِ گفتاری به متن اصلاح‌شده، در سه پایپ‌لاین. این پروژه از <span dir="ltr">Spin_Medical_Assistant_Project</span> جدا شده: به‌جای موتور عمومیِ <span dir="ltr">Orchestrator</span> که یک <span dir="ltr">JSON</span> instruction را تفسیر می‌کند، منطق بوعلی مستقیم در پایتون نوشته شده (`pipelines.py`) — همان رفتار و همان system prompt ها، بدون لایه‌ی انتزاعیِ عمومی.
 
-<span dir="ltr">STT</span> و <span dir="ltr">Core_LLM</span> همچنان در <span dir="ltr">Spin_Medical_Assistant_Project</span> هستند؛ این کنترلر فقط یک کلاینتِ <span dir="ltr">HTTP</span>ِ سبک برای آن‌هاست (`stt_llm_client.py`) — دقیقاً همان الگویی که <span dir="ltr">Orchestrator</span> خودش استفاده می‌کند.
+<span dir="ltr">STT</span> و <span dir="ltr">Core_LLM</span> اینجا کپیِ محلی‌اند (`../stt/`، `../core_llm/` — بخشی از همین ریپو، نه وابسته به پروژه‌ی اصلی)؛ این کنترلر فقط یک کلاینتِ <span dir="ltr">HTTP</span>ِ سبک برای آن‌هاست (`stt_llm_client.py`) — دقیقاً همان الگویی که <span dir="ltr">Orchestrator</span> در پروژه‌ی اصلی استفاده می‌کند.
 
 ## پایپ‌لاین‌ها
 | پایپ‌لاین | رفتار |
@@ -18,7 +18,7 @@
 pip install -r requirements.txt
 python main.py          # یا: run.bat (Windows) / ./run.sh (Linux)
 ```
-روی `0.0.0.0:9002` بالا می‌آید (مستندات تعاملی در `/docs`). آدرس <span dir="ltr">STT</span>/<span dir="ltr">Core_LLM</span> را در `.env` تنظیم کنید (پیش‌فرض: هم‌مکان روی همان سرور، پورت‌های `8000`/`8001`).
+روی `0.0.0.0:9002` بالا می‌آید (مستندات تعاملی در `/docs`). پیش‌فرض این است که `../stt/` و `../core_llm/` روی همان سرور، پورت‌های `8000`/`8001` در حال اجرا باشند (آدرس‌ها در `.env` قابل تغییرند).
 
 ## API
 | متد و مسیر | کاربرد |

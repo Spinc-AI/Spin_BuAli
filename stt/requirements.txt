@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+transformers
+torch
+torchaudio
+soundfile
+numpy
+sentencepiece
+protobuf

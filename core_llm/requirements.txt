@@ -1,0 +1,22 @@
+python-dotenv>=1.0
+
+# HTTP API layer (main.py) — lets the orchestrator call Core_LLM over HTTP
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+python-multipart   # multipart form parsing, needed for /chat_audio's UploadFile
+
+# All local models — served directly via transformers (see model.py), NOT
+# Ollama (Ollama doesn't support audio input at all, and this project no
+# longer runs two serving paths side by side). Needs a GPU with real VRAM
+# headroom -- no quantization here (unlike Ollama, which auto-quantized for
+# you), so a 32B-class model can need 60GB+ VRAM at full precision. Install
+# the CUDA build of torch, see https://pytorch.org for the right command
+# for your system.
+torch
+transformers        # needs a version with Gemma4 (AutoModelForMultimodalLM) AND Qwen3-Omni
+                     # (Qwen3OmniMoeThinkerForConditionalGeneration) support -- use latest
+accelerate           # for device_map="auto"
+soundfile
+librosa

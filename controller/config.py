@@ -27,3 +27,44 @@ GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googl
 GEMINI_PREFIX = "gemini:"
 
 MAX_STT_SLOTS = 3
+
+# Maximum audio upload accepted by AI Controller.
+MAX_UPLOAD_BYTES = int(
+    os.getenv(
+        "MAX_UPLOAD_BYTES",
+        str(50 * 1024 * 1024),
+    )
+)
+
+# Shared token used for Backend -> AI Controller communication.
+INTERNAL_API_TOKEN = os.getenv(
+    "INTERNAL_API_TOKEN",
+    "",
+)
+
+SUPPORTED_PREPROCESSING_VERSIONS = {
+    value.strip()
+    for value in os.getenv(
+        "SUPPORTED_PREPROCESSING_VERSIONS",
+        "legacy-v1",
+    ).split(",")
+    if value.strip()
+}
+
+SUPPORTED_PIPELINE_VERSIONS = {
+    value.strip()
+    for value in os.getenv(
+        "SUPPORTED_PIPELINE_VERSIONS",
+        "buali-v1",
+    ).split(",")
+    if value.strip()
+}
+
+SUPPORTED_PROMPT_VERSIONS = {
+    value.strip()
+    for value in os.getenv(
+        "SUPPORTED_PROMPT_VERSIONS",
+        "radiology-v1",
+    ).split(",")
+    if value.strip()
+}

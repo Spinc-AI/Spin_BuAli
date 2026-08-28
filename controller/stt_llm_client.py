@@ -306,27 +306,69 @@ def chat(messages: list[dict], model: Optional[str], response_format: Optional[d
     return llm_chat(messages, model=model, response_format=response_format)
 
 
+# def llm_unload(model: Optional[str] = None) -> None:
+#     if is_api_model(model):
+#         return  # external API — nothing local to unload
+#     params = {"model": model} if model else {}
+#     with _client() as c:
+#         c.post(f"{config.LLM_URL}/unload", params=params)
+
+
 def llm_unload(model: Optional[str] = None) -> None:
-    if is_api_model(model):
-        return  # external API — nothing local to unload
+    """Unload only local models; cloud models have nothing to unload."""
+
+    if is_cloud_model(model):
+        return
+
     params = {"model": model} if model else {}
+
     with _client() as c:
-        c.post(f"{config.LLM_URL}/unload", params=params)
+        c.post(
+            f"{config.LLM_URL}/unload",
+            params=params,
+        )
 
 
 # ---------------------------------------------------------------------------
 # STT slots — up to MAX_STT_SLOTS independently-configurable STT engines
 # ---------------------------------------------------------------------------
-def transcribe_slot(audio: bytes, slot, default_language: Optional[str]) -> str:
-    """Run one STT slot: loads+calls the local service, or calls the external API.
-    `slot` is a schemas.SttSlotConfig."""
-    language = slot.language or default_language
-    if is_api_model(slot.model):
-        return stt_api_transcribe(audio, language=language, api_key=slot.api_key,
-                                  base_url=slot.base_url, model=strip_api_prefix(slot.model) or None)
-    stt_load(slot.model)  # STT holds one model at a time — (re)load right before use
-    return stt_transcribe(audio, language=language)
+# def transcribe_slot(audio: bytes, slot, default_language: Optional[str]) -> str:
+#     """Run one STT slot: loads+calls the local service, or calls the external API.
+#     `slot` is a schemas.SttSlotConfig."""
+#     language = slot.language or default_language
+#     if is_api_model(slot.model):
+#         return stt_api_transcribe(audio, language=language, api_key=slot.api_key,
+#                                   base_url=slot.base_url, model=strip_api_prefix(slot.model) or None)
+#     stt_load(slot.model)  # STT holds one model at a time — (re)load right before use
+#     return stt_transcribe(audio, language=language)
 
+def transcribe_slot(
+    audio: bytes,
+    slot,
+    default_language: Optional[str],
+    filename: str = "audio.wav",
+) -> str:
+    """Run one local or cloud STT slot using the real filename."""
+
+    language = slot.language or default_language
+
+    if is_api_model(slot.model):
+        return stt_api_transcribe(
+            audio=audio,
+            filename=filename,
+            language=language,
+            api_key=slot.api_key,
+            base_url=slot.base_url,
+            model=strip_api_prefix(slot.model) or None,
+        )
+
+    stt_load(slot.model)
+
+    return stt_transcribe(
+        audio=audio,
+        filename=filename,
+        language=language,
+    )
 
 def extract_json(text: str):
     """Pull a JSON object out of the LLM reply (tolerant of code fences / prose)."""

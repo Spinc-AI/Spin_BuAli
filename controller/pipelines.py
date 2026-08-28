@@ -15,7 +15,8 @@ from typing import Optional
 from fastapi import HTTPException
 
 import stt_llm_client as client
-from schemas import SttSlotConfig
+# from schemas import SttSlotConfig
+from schemas import RuntimeSttSlotConfig
 
 REPORT_TEMPLATE = json.loads(
     (pathlib.Path(__file__).parent / "report_template.json").read_text(encoding="utf-8")
@@ -76,15 +77,37 @@ TRANSCRIPT_LABELS = {
 }
 
 
-def _run_stt_slots(audio: bytes, stt_slots: list[Optional[SttSlotConfig]],
-                    language: Optional[str]) -> dict[str, str]:
-    """Transcribe every configured slot (unconfigured slots are skipped). Returns
-    {"transcript_1": ..., "transcript_2": ..., ...} for whichever slots ran."""
+# def _run_stt_slots(audio: bytes, stt_slots: list[Optional[SttSlotConfig]],
+#                     language: Optional[str]) -> dict[str, str]:
+#     """Transcribe every configured slot (unconfigured slots are skipped). Returns
+#     {"transcript_1": ..., "transcript_2": ..., ...} for whichever slots ran."""
+#     outputs: dict[str, str] = {}
+#     for idx, slot in enumerate(stt_slots or []):
+#         if slot is None:
+#             continue
+#         outputs[f"transcript_{idx + 1}"] = client.transcribe_slot(audio, slot, language)
+#     return outputs
+def _run_stt_slots(
+    audio: bytes,
+    audio_filename: str,
+    stt_slots: list[Optional[RuntimeSttSlotConfig]],
+    language: Optional[str],
+) -> dict[str, str]:
+    """Run every configured STT slot."""
+
     outputs: dict[str, str] = {}
+
     for idx, slot in enumerate(stt_slots or []):
         if slot is None:
             continue
-        outputs[f"transcript_{idx + 1}"] = client.transcribe_slot(audio, slot, language)
+
+        outputs[f"transcript_{idx + 1}"] = client.transcribe_slot(
+            audio=audio,
+            slot=slot,
+            default_language=language,
+            filename=audio_filename,
+        )
+
     return outputs
 
 
@@ -117,12 +140,35 @@ def _reconcile(outputs: dict[str, str], llm_model: str,
     return merged
 
 
-def run_separate(audio: bytes, stt_slots: list[Optional[SttSlotConfig]], language: Optional[str],
-                  llm_model: str, llm_api_key: Optional[str], llm_base_url: Optional[str]) -> dict:
-    """Up to 3 independent STT engines transcribe, then an LLM reconciles."""
-    outputs = _run_stt_slots(audio, stt_slots, language)
-    return _reconcile(outputs, llm_model, llm_api_key, llm_base_url)
+# def run_separate(audio: bytes, stt_slots: list[Optional[SttSlotConfig]], language: Optional[str],
+#                   llm_model: str, llm_api_key: Optional[str], llm_base_url: Optional[str]) -> dict:
+#     """Up to 3 independent STT engines transcribe, then an LLM reconciles."""
+#     outputs = _run_stt_slots(audio, stt_slots, language)
+#     return _reconcile(outputs, llm_model, llm_api_key, llm_base_url)
+def run_separate(
+    audio: bytes,
+    audio_filename: str,
+    stt_slots: list[Optional[RuntimeSttSlotConfig]],
+    language: Optional[str],
+    llm_model: str,
+    llm_api_key: Optional[str],
+    llm_base_url: Optional[str],
+) -> dict:
+    """Run STT engines and reconcile their transcripts with a text LLM."""
 
+    outputs = _run_stt_slots(
+        audio=audio,
+        audio_filename=audio_filename,
+        stt_slots=stt_slots,
+        language=language,
+    )
+
+    return _reconcile(
+        outputs=outputs,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url,
+    )
 
 def _transcribe_and_report_directly(audio: bytes, audio_filename: str, reference_outputs: dict[str, str],
                                      llm_model: str, llm_api_key: Optional[str],
@@ -162,9 +208,36 @@ def run_multimodal(audio: bytes, audio_filename: str, llm_model: str,
     return _transcribe_and_report_directly(audio, audio_filename, {}, llm_model, llm_api_key, llm_base_url)
 
 
-def run_hybrid(audio: bytes, audio_filename: str, stt_slots: list[Optional[SttSlotConfig]],
-               language: Optional[str], llm_model: str,
-               llm_api_key: Optional[str], llm_base_url: Optional[str]) -> dict:
-    """STT slot(s) AND the audio itself both go to the LLM — transcripts as reference material."""
-    outputs = _run_stt_slots(audio, stt_slots, language)
-    return _transcribe_and_report_directly(audio, audio_filename, outputs, llm_model, llm_api_key, llm_base_url)
+# def run_hybrid(audio: bytes, audio_filename: str, stt_slots: list[Optional[SttSlotConfig]],
+#                language: Optional[str], llm_model: str,
+#                llm_api_key: Optional[str], llm_base_url: Optional[str]) -> dict:
+#     """STT slot(s) AND the audio itself both go to the LLM — transcripts as reference material."""
+#     outputs = _run_stt_slots(audio, stt_slots, language)
+#     return _transcribe_and_report_directly(audio, audio_filename, outputs, llm_model, llm_api_key, llm_base_url)
+
+def run_hybrid(
+    audio: bytes,
+    audio_filename: str,
+    stt_slots: list[Optional[RuntimeSttSlotConfig]],
+    language: Optional[str],
+    llm_model: str,
+    llm_api_key: Optional[str],
+    llm_base_url: Optional[str],
+) -> dict:
+    """Run STT slots, then send audio and transcripts to multimodal LLM."""
+
+    outputs = _run_stt_slots(
+        audio=audio,
+        audio_filename=audio_filename,
+        stt_slots=stt_slots,
+        language=language,
+    )
+
+    return _transcribe_and_report_directly(
+        audio=audio,
+        audio_filename=audio_filename,
+        reference_outputs=outputs,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url,
+    )

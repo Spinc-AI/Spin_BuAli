@@ -1,1 +1,1 @@
-'''STT service package.'''
+"""STT service package."""

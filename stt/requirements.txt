@@ -1,11 +1,17 @@
 fastapi
 uvicorn[standard]
-python-multipart
 pydantic
-transformers
+python-multipart
+python-dotenv>=1.0
+
+# Model serving. Install the CUDA build of torch for GPU inference --
+# see https://pytorch.org for the right command for your system.
 torch
 torchaudio
-soundfile
-numpy
+transformers
 sentencepiece
 protobuf
+
+# Audio decoding
+soundfile
+numpy

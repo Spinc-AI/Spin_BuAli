@@ -1,31 +1,21 @@
-'''Central configuration for the STT service.'''
+"""Central configuration, loaded from the environment or a .env file."""
+import os
 
 import torch
+from dotenv import load_dotenv
 
+load_dotenv()  # reads .env if present; no-op otherwise
 
-# ============================================================
-# Runtime
-# ============================================================
+# --- Runtime ---
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+DEVICE = os.getenv("DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-HOST = "0.0.0.0"
-PORT = 8000
-
-ALLOWED_ORIGINS = ["*"]
-
-
-# ============================================================
-# Audio
-# ============================================================
-
+# --- Audio ---
 TARGET_SAMPLE_RATE = 16000
 
-
-# ============================================================
-# Languages
-# ============================================================
-
+# --- Languages ---
 # Codes accepted by POST /transcribe's `language` field, mapped to a display
 # name. Each model class maps these onto whatever codes it actually needs
 # (see WHISPER_LANGUAGE_NAMES / SEAMLESS_LANGUAGE_CODES in model.py).
@@ -33,19 +23,15 @@ SUPPORTED_LANGUAGES = {
     "fa": "Persian",
     "en": "English",
 }
-DEFAULT_LANGUAGE = "fa"
+DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "fa")
 
+# --- Models ---
+# A registry key to load at startup, instead of waiting for the first request.
+PRELOAD_MODEL = os.getenv("PRELOAD_MODEL") or None
 
-# ============================================================
-# Models
-# ============================================================
-
-PRELOAD_MODEL = None
-
-# Ordered best -> worst by clinic-realistic-noise WER, per
-# ../benchmark/benchmark_summary.pdf ("Results - clean vs. clinic-realistic").
-# This order is what the UI dropdowns show, so don't reorder without also
-# reordering the benchmark's ranking.
+# Ordered best -> worst by word error rate on clinic-realistic noise. The UI
+# dropdowns show this order, so it is a ranking, not an arbitrary list --
+# don't reorder without a benchmark run to justify it.
 MODEL_REGISTRY = {
     "seamless": {
         "type": "seamless_v2",

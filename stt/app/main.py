@@ -1,4 +1,4 @@
-'''HTTP layer: endpoints for listing, loading and running models.'''
+"""HTTP layer: endpoints for listing, loading and running models."""
 
 import io
 from contextlib import asynccontextmanager
@@ -14,16 +14,12 @@ from app.model import ModelManager
 from app.schemas import LanguagesResponse, LoadResponse, ModelInfo, TranscriptionResult
 
 
-# ============================================================
-# Application setup
-# ============================================================
-
 manager = ModelManager()
 
 
 @asynccontextmanager
 async def lifespan(app):
-    '''Optionally warm up a default model before the server accepts traffic.'''
+    """Optionally warm up a default model before the server accepts traffic."""
     if config.PRELOAD_MODEL:
         await run_in_threadpool(manager.load, config.PRELOAD_MODEL)
     yield
@@ -39,31 +35,23 @@ app.add_middleware(
 )
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
 def _read_audio(raw):
-    '''Decode raw audio bytes into a mono float32 array and its sample rate.'''
+    """Decode raw audio bytes into a mono float32 array and its sample rate."""
     audio, sr = sf.read(io.BytesIO(raw), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     return np.asarray(audio, np.float32), int(sr)
 
 
-# ============================================================
-# Routes
-# ============================================================
-
 @app.get("/models", response_model=ModelInfo)
 async def list_models():
-    '''List available models and report which one is loaded.'''
+    """List available models and report which one is loaded."""
     return ModelInfo(available=manager.available(), loaded=manager.loaded)
 
 
 @app.post("/models/{key}/load", response_model=LoadResponse)
 async def load_model(key: str):
-    '''Load the requested model into memory, replacing any loaded model.'''
+    """Load the requested model into memory, replacing any loaded model."""
     if key not in manager.available():
         raise HTTPException(status_code=404, detail=f"unknown model '{key}'")
     await run_in_threadpool(manager.load, key)
@@ -79,17 +67,17 @@ async def unload_model():
 
 @app.get("/languages", response_model=LanguagesResponse)
 async def list_languages():
-    '''List language codes accepted by POST /transcribe's `language` field.'''
+    """List language codes accepted by POST /transcribe's `language` field."""
     return LanguagesResponse(available=config.SUPPORTED_LANGUAGES, default=config.DEFAULT_LANGUAGE)
 
 
 @app.post("/transcribe", response_model=TranscriptionResult)
 async def transcribe(file: UploadFile = File(...), language: str = Form(default=None)):
-    '''Transcribe an uploaded audio file with the currently loaded model.
+    """Transcribe an uploaded audio file with the currently loaded model.
 
     `language` is one of GET /languages' `available` codes (e.g. "fa", "en").
     Defaults to config.DEFAULT_LANGUAGE if omitted.
-    '''
+    """
     if manager.loaded is None:
         raise HTTPException(
             status_code=409,
@@ -106,10 +94,6 @@ async def transcribe(file: UploadFile = File(...), language: str = Form(default=
     text = await run_in_threadpool(manager.transcribe, audio, sr, language=lang)
     return TranscriptionResult(model=manager.loaded, language=lang, text=text)
 
-
-# ============================================================
-# Entry point
-# ============================================================
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,13 +1,9 @@
-'''Lightweight API tests that do not load any heavy model weights.'''
+"""Lightweight API tests that do not load any heavy model weights."""
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 
-
-# ============================================================
-# Model listing
-# ============================================================
 
 def test_list_models_reports_registry():
     with TestClient(app) as client:
@@ -18,10 +14,6 @@ def test_list_models_reports_registry():
     assert "seamless" in body["available"]
     assert body["loaded"] is None
 
-
-# ============================================================
-# Guard rails
-# ============================================================
 
 def test_unknown_model_is_rejected():
     with TestClient(app) as client:

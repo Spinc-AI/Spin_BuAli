@@ -13,7 +13,7 @@ nvidia-smi          # should list your GPU and its VRAM
 ## 2. Install dependencies
 
 ```bash
-cd Core_LLM/deployment
+cd core_llm
 pip install -r requirements.txt
 ```
 If `pip install torch` grabs a CPU-only build, reinstall the CUDA one explicitly
@@ -49,8 +49,8 @@ the server's port 8001 appears as `localhost:8001` on your machine:
 ssh -p <port> -L 8001:localhost:8001 user@your-server-address
 ```
 
-Then, in a second window, either hit the HTTP API directly (`curl`, the demo
-app's Core_LLM tab) or run the no-server terminal test:
+Then, in a second window, either hit the HTTP API directly with `curl` or run
+the no-server terminal test:
 ```powershell
 python chat.py                 # uses config.DEFAULT_MODEL
 python chat.py qwen3-omni-30b  # or pick a specific registry key

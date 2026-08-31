@@ -1,12 +1,8 @@
-"""HTTP layer for Core_LLM — a thin FastAPI wrapper around model.MANAGER.
+"""HTTP layer for Core_LLM -- a thin FastAPI wrapper around model.MANAGER.
 
-The orchestrator (and other modules) call this service over HTTP instead of
-importing Core_LLM directly. /chat and /chat_audio both route through the
-SAME manager/registry (model.py) — served directly via `transformers`, not
-Ollama (Ollama can't accept audio input at all, so there's no way to keep it
-for the audio role; dropping it for the text role too means one unified
-serving path instead of two, and a model loaded via one endpoint is already
-warm for the other as long as the same registry key is requested).
+Callers reach this service over HTTP rather than importing Core_LLM directly.
+/chat and /chat_audio share one manager, so a model loaded through either is
+already warm for the other.
 
 Run:
     python main.py            # or: uvicorn main:app --host 0.0.0.0 --port 8001
@@ -30,52 +26,44 @@ app.add_middleware(
 )
 
 
+async def _generate(**kwargs) -> str:
+    """Run one generation off the event loop, mapping failures to HTTP codes."""
+    try:
+        return await run_in_threadpool(MANAGER.chat, **kwargs)
+    except KeyError as exc:  # unknown registry key
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # model load or generation failure
+        raise HTTPException(status_code=502, detail=f"LLM error: {exc}")
+
+
 @app.get("/", response_model=HealthResponse)
 async def health():
-    """Liveness check, and which model is currently loaded (if any)."""
+    """Liveness check, and which model is currently loaded."""
     return HealthResponse(status="ok", model=MANAGER.loaded or config.DEFAULT_MODEL)
 
 
 @app.get("/models")
 def list_models():
-    """List all registered local models, and which is loaded."""
+    """Every registered model, and which one is loaded."""
     return {"available": MANAGER.available(), "loaded": MANAGER.loaded}
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    """Send chat messages (OpenAI format) and get the assistant's full reply."""
-    key = req.model or config.DEFAULT_MODEL
-    messages = [m.model_dump() for m in req.messages]
-    try:
-        reply = await run_in_threadpool(
-            MANAGER.chat, key, messages,
-            temperature=req.temperature, response_format=req.response_format,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except Exception as exc:  # model load/generation error
-        raise HTTPException(status_code=502, detail=f"LLM error: {exc}")
-    return ChatResponse(model=key, reply=reply)
-
-
-@app.post("/unload")
-async def unload(model: str | None = None):
-    """Unload the currently-loaded model, freeing its VRAM.
-
-    `model` is accepted for API compatibility with callers that pass the
-    model they were using, but is otherwise unused -- there's only ever one
-    model loaded at a time now, so this always unloads whatever that is.
-    """
-    loaded = MANAGER.loaded
-    await run_in_threadpool(MANAGER.unload)
-    return {"status": "unloaded", "model": model or loaded}
-
-
 @app.get("/chat_audio/models")
-def chat_audio_models():
-    """List the local AUDIO-CAPABLE models (a subset of GET /models), and which is loaded."""
+def list_audio_models():
+    """Just the audio-capable models -- a subset of GET /models."""
     return {"available": MANAGER.available(audio_only=True), "loaded": MANAGER.loaded}
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """Send chat messages (OpenAI format) and get the assistant's full reply."""
+    key = request.model or config.DEFAULT_MODEL
+    reply = await _generate(
+        key=key,
+        messages=[message.model_dump() for message in request.messages],
+        temperature=request.temperature,
+    )
+    return ChatResponse(model=key, reply=reply)
 
 
 @app.post("/chat_audio")
@@ -86,31 +74,27 @@ async def chat_audio(
     model: str | None = Form(default=None),
     temperature: float = Form(default=0.3),
 ):
-    """Local multimodal chat: give an audio-capable model the audio directly,
-    no STT step. `model` must be one of GET /chat_audio/models' available
-    keys; defaults to config.DEFAULT_MODEL (only meaningful if that happens
-    to be an audio-capable one -- otherwise pass `model` explicitly).
+    """Give an audio-capable model the recording directly, with no STT step.
+
+    `model` must be one of GET /chat_audio/models' keys. It defaults to
+    config.DEFAULT_MODEL, which is only useful if that happens to be
+    audio-capable -- otherwise pass it explicitly.
     """
     key = model or config.DEFAULT_MODEL
-    audio_bytes = await file.read()
-    audio_format = (file.filename or "").rsplit(".", 1)[-1].lower() or "wav"
-    messages = [{"role": "system", "content": system_prompt},
-                {"role": "user", "content": text or ""}]
-    try:
-        reply = await run_in_threadpool(
-            MANAGER.chat, key, messages, audio=audio_bytes, audio_format=audio_format,
-            temperature=temperature,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Multimodal LLM error: {exc}")
+    reply = await _generate(
+        key=key,
+        messages=[{"role": "system", "content": system_prompt},
+                  {"role": "user", "content": text or ""}],
+        audio=await file.read(),
+        audio_format=(file.filename or "").rsplit(".", 1)[-1].lower() or "wav",
+        temperature=temperature,
+    )
     return {"model": key, "reply": reply}
 
 
-@app.post("/chat_audio/unload")
-async def chat_audio_unload():
-    """Unload the currently-loaded model, freeing its VRAM (alias of POST /unload)."""
+@app.post("/unload")
+async def unload():
+    """Unload the loaded model, freeing its VRAM."""
     loaded = MANAGER.loaded
     await run_in_threadpool(MANAGER.unload)
     return {"status": "unloaded", "model": loaded}

@@ -1,32 +1,23 @@
-"""Core_LLM's unified local model layer -- served directly via ``transformers``,
-NOT Ollama.
+"""Local model loading and generation, served directly via ``transformers``.
 
-Ollama was dropped entirely: it can't accept audio input at all (as of
-2026-07: https://github.com/ollama/ollama/issues/11798), which meant running
-two separate serving paths side by side (Ollama for text, transformers for
-audio) even though several of these models can do both. Now there's ONE
-manager holding at most one loaded model at a time, and that model serves
-BOTH `/chat` (text-only) and `/chat_audio` (audio-capable models only) in
-main.py -- load it once, use it for either role without a reload, as long as
-the same registry key is requested.
+One manager holds at most one model at a time, and that model serves both
+``/chat`` and ``/chat_audio`` -- load it once and either endpoint can use it
+without a reload, as long as the same registry key is requested.
 
-Trade-off accepted deliberately: no quantization here (Ollama auto-quantized
-for you; plain `transformers` loads at full bf16/fp16 precision), so VRAM
-needs are higher per model than the old Ollama-served numbers. Fine on a
-big card; revisit with bitsandbytes if VRAM becomes a real constraint.
+Models come in three shapes, each with its own transformers classes and
+chat-template conventions. Add a model by writing a ``BaseLLM`` subclass (or
+reusing one) and adding a ``MODEL_REGISTRY`` entry; nothing in main.py changes.
 
-Three model "shapes", each with their own transformers classes and
-chat-template content-key conventions -- mirrors the STT module's swappable
-BaseSTTModel/ModelManager pattern:
-  - TextOnlyModel   -- Aya Expanse (8B/32B), Gemma 4 31B. No audio input --
-                       26B-A4B/31B are Gemma 4's image/video/text-only tier.
-  - GemmaAudioModel -- Gemma 4 E4B/12B ("Unified", encoder-free). Text AND
-                       audio.
-  - QwenOmniModel   -- Qwen3-Omni-30B, Thinker-only (text output, no speech
-                       generation -- we don't need audio-out). Text AND
-                       audio; confirmed via PARSA-Bench (an independent
-                       Persian audio-LM benchmark) as the strongest tested
-                       locally-runnable option for Persian audio.
+  TextOnlyModel    Aya Expanse 8B/32B, Gemma 4 31B. No audio input.
+  GemmaAudioModel  Gemma 4 E4B/12B ("Unified", encoder-free). Text and audio.
+  QwenOmniModel    Qwen3-Omni-30B, Thinker-only -- text out, no speech
+                   generation, which also skips the Talker's codec weights.
+
+Two deliberate trade-offs:
+  - No Ollama. It cannot accept audio input at all, so keeping it would mean
+    two serving paths side by side when several of these models do both roles.
+  - No quantization, so models load at full bf16/fp16 precision and need more
+    VRAM than a quantized equivalent. Revisit with bitsandbytes if that bites.
 """
 import gc
 import tempfile
@@ -47,9 +38,9 @@ import config
 
 
 def _generation_kwargs(temperature: float) -> dict:
-    """Low temperature (near 0) -> greedy decoding; otherwise sampled.
-    Mirrors the old Ollama-backed /chat's low-temperature-by-default
-    behavior (medical use wants consistency, not creativity)."""
+    """Near-zero temperature means greedy decoding; anything higher samples.
+
+    Medical use wants consistency over creativity, hence the low default."""
     if temperature <= 0.01:
         return {"do_sample": False}
     return {"do_sample": True, "temperature": temperature}
@@ -72,16 +63,16 @@ class BaseLLM(ABC):
 
     @abstractmethod
     def chat(self, messages: list[dict], audio_path: str | None = None,
-             temperature: float = 0.3, response_format: dict | None = None) -> str:
+             temperature: float = 0.3) -> str:
         """Return the model's text reply.
 
         `messages` is the standard OpenAI shape: [{"role": ..., "content": <str>}, ...].
         `audio_path` (only meaningful if `supports_audio`) attaches an audio
         file to the last user turn. `temperature` <= 0.01 means greedy
-        decoding (see _generation_kwargs). `response_format` is accepted for
-        interface parity with the old Ollama-backed /chat, but not enforced
-        here -- there's no local equivalent of Ollama/OpenAI's JSON mode;
-        rely on the prompt asking for JSON and the caller's tolerant parsing.
+        decoding (see _generation_kwargs).
+
+        There is no JSON mode: callers that need JSON ask for it in the
+        prompt and parse the reply tolerantly.
         """
 
     def unload(self):
@@ -103,7 +94,7 @@ class TextOnlyModel(BaseLLM):
             self.model_id, device_map=config.DEVICE_MAP, dtype="auto"
         )
 
-    def chat(self, messages, audio_path=None, temperature=0.3, response_format=None):
+    def chat(self, messages, audio_path=None, temperature=0.3):
         if audio_path:
             raise ValueError(f"{self.model_id} is text-only and can't accept audio input")
         inputs = self._processor.apply_chat_template(
@@ -135,7 +126,7 @@ class GemmaAudioModel(BaseLLM):
             self.model_id, device_map=config.DEVICE_MAP, attn_implementation="sdpa"
         )
 
-    def chat(self, messages, audio_path=None, temperature=0.3, response_format=None):
+    def chat(self, messages, audio_path=None, temperature=0.3):
         last_user = _last_user_index(messages) if audio_path else -1
         converted = []
         for i, m in enumerate(messages):
@@ -177,7 +168,7 @@ class QwenOmniModel(BaseLLM):
             self.model_id, device_map=config.DEVICE_MAP
         )
 
-    def chat(self, messages, audio_path=None, temperature=0.3, response_format=None):
+    def chat(self, messages, audio_path=None, temperature=0.3):
         last_user = _last_user_index(messages) if audio_path else -1
         converted = []
         for i, m in enumerate(messages):
@@ -259,18 +250,16 @@ class LLMManager:
             self._current_key = key
 
     def chat(self, key: str, messages: list[dict], audio: bytes | None = None,
-             audio_format: str | None = None, temperature: float = 0.3,
-             response_format: dict | None = None) -> str:
+             audio_format: str | None = None, temperature: float = 0.3) -> str:
         with self._lock:
             self._ensure_loaded(key)
             if audio is None:
-                return self._current_model.chat(messages, temperature=temperature,
-                                                 response_format=response_format)
+                return self._current_model.chat(messages, temperature=temperature)
             with tempfile.NamedTemporaryFile(suffix=f".{audio_format}") as f:
                 f.write(audio)
                 f.flush()
-                return self._current_model.chat(messages, audio_path=f.name, temperature=temperature,
-                                                response_format=response_format)
+                return self._current_model.chat(messages, audio_path=f.name,
+                                                temperature=temperature)
 
     def unload(self):
         with self._lock:

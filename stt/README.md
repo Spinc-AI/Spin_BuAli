@@ -6,10 +6,10 @@ is sent, so transcription requests never pay the loading cost.
 
 ## Models
 
-Ordered best -> worst by clinic-realistic-noise WER, per
-[`../benchmark/benchmark_summary.pdf`](../benchmark/benchmark_summary.pdf). This
-is also the order `GET /models` and the UI dropdowns present them in — don't
-reorder `MODEL_REGISTRY` without re-checking the benchmark's ranking.
+Ordered best -> worst by word error rate on clinic-realistic noise, measured in
+a separate benchmark run (not included in this repo). This is also the order
+`GET /models` and the UI dropdowns present them in, so treat it as a ranking —
+don't reorder `MODEL_REGISTRY` without a benchmark run to justify the change.
 
 | # | key                      | model                                                                  | clinic WER | notes |
 |---|--------------------------|-------------------------------------------------------------------------|-----------|-------|
@@ -98,18 +98,19 @@ Unload the current model and free its memory.
 
 ## Typical sequence
 
-Base URL: `http://193.93.169.134:8000`
-
 ```bash
 # 1. see available models / which is loaded
-curl http://193.93.169.134:8000/models
+curl http://localhost:8000/models
 
 # 2. load a model (wait for {"status":"ready"})
-curl -X POST http://193.93.169.134:8000/models/whisper/load
+curl -X POST http://localhost:8000/models/whisper/load
 
 # 3. transcribe an audio file (language defaults to fa; add -F "language=en" for English)
-curl -X POST http://193.93.169.134:8000/transcribe -F "file=@clip.wav" -F "language=en"
+curl -X POST http://localhost:8000/transcribe -F "file=@clip.wav" -F "language=en"
 ```
+
+Swap in the deployed server's address from the table above when calling it
+from another machine.
 
 ## Adding a model
 

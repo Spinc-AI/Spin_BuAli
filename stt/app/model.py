@@ -1,9 +1,9 @@
-'''Model loading, swapping and transcription.
+"""Model loading, swapping and transcription.
 
 Each supported architecture is a subclass of ``BaseSTTModel``. A new model is
 added by writing one subclass, registering it in ``_MODEL_TYPES`` and adding an
 entry to ``config.MODEL_REGISTRY`` — nothing in the API layer changes.
-'''
+"""
 
 import gc
 import threading
@@ -28,12 +28,8 @@ WHISPER_LANGUAGE_NAMES = {"fa": "persian", "en": "english"}
 SEAMLESS_LANGUAGE_CODES = {"fa": "pes", "en": "eng"}
 
 
-# ============================================================
-# Audio utilities
-# ============================================================
-
 def resample(audio, sr, target_sr=config.TARGET_SAMPLE_RATE):
-    '''Resample a mono float32 array to ``target_sr`` if needed.'''
+    """Resample a mono float32 array to ``target_sr`` if needed."""
     if sr == target_sr:
         return audio
     import torchaudio
@@ -43,12 +39,8 @@ def resample(audio, sr, target_sr=config.TARGET_SAMPLE_RATE):
     return out.squeeze(0).numpy()
 
 
-# ============================================================
-# Model implementations
-# ============================================================
-
 class BaseSTTModel(ABC):
-    '''An STT model that can be loaded into memory and run on audio.'''
+    """An STT model that can be loaded into memory and run on audio."""
 
     def __init__(self, model_id, device):
         self.model_id = model_id
@@ -58,18 +50,18 @@ class BaseSTTModel(ABC):
 
     @abstractmethod
     def load(self):
-        '''Pull weights and processor into memory on ``self.device``.'''
+        """Pull weights and processor into memory on ``self.device``."""
 
     @abstractmethod
     def transcribe(self, audio, sr, language=None):
-        '''Return the transcription of a mono float32 array sampled at ``sr``.
+        """Return the transcription of a mono float32 array sampled at ``sr``.
 
         ``language`` is one of ``config.SUPPORTED_LANGUAGES`` (e.g. "fa", "en"),
         or ``None`` to use the model's own default behaviour.
-        '''
+        """
 
     def unload(self):
-        '''Release references and free GPU memory.'''
+        """Release references and free GPU memory."""
         self._model = None
         self._processor = None
         gc.collect()
@@ -78,7 +70,7 @@ class BaseSTTModel(ABC):
 
 
 class WhisperModel(BaseSTTModel):
-    '''Whisper-family conditional generation model.'''
+    """Whisper-family conditional generation model."""
 
     def load(self):
         dtype = torch.float16 if self.device == "cuda" else torch.float32
@@ -111,7 +103,7 @@ class WhisperModel(BaseSTTModel):
 
 
 class SeamlessV2Model(BaseSTTModel):
-    '''SeamlessM4T v2 speech-to-text model.'''
+    """SeamlessM4T v2 speech-to-text model."""
 
     def __init__(self, model_id, device, tgt_lang="pes"):
         super().__init__(model_id, device)
@@ -137,12 +129,12 @@ class SeamlessV2Model(BaseSTTModel):
 
 
 class SeamlessV1Model(BaseSTTModel):
-    '''SeamlessM4T v1 speech-to-text model (e.g. hf-seamless-m4t-medium).
+    """SeamlessM4T v1 speech-to-text model (e.g. hf-seamless-m4t-medium).
 
     v1's ``generate(..., generate_speech=False)`` returns token ids directly
     (no ``.sequences`` wrapper like v2), so decoding differs slightly from
     ``SeamlessV2Model``.
-    '''
+    """
 
     def __init__(self, model_id, device, tgt_lang="pes"):
         super().__init__(model_id, device)
@@ -166,7 +158,7 @@ class SeamlessV1Model(BaseSTTModel):
 
 
 class CTCModel(BaseSTTModel):
-    '''Plain wav2vec2-family CTC model (no language adapter).'''
+    """Plain wav2vec2-family CTC model (no language adapter)."""
 
     def load(self):
         self._processor = Wav2Vec2Processor.from_pretrained(self.model_id)
@@ -185,10 +177,10 @@ class CTCModel(BaseSTTModel):
 
 
 class MMSModel(CTCModel):
-    '''Meta MMS CTC model — same as ``CTCModel`` but loads a target-language
+    """Meta MMS CTC model — same as ``CTCModel`` but loads a target-language
     adapter first (MMS ships one shared backbone with per-language adapter
     weights; see https://huggingface.co/facebook/mms-1b-all).
-    '''
+    """
 
     def __init__(self, model_id, device, target_lang="fas"):
         super().__init__(model_id, device)
@@ -204,13 +196,8 @@ class MMSModel(CTCModel):
         self._model.load_adapter(self.target_lang)
 
 
-# ============================================================
-# Factory
-# ============================================================
-
 _MODEL_TYPES = {
     "whisper": WhisperModel,
-    "seamless": SeamlessV2Model,
     "seamless_v2": SeamlessV2Model,
     "seamless_v1": SeamlessV1Model,
     "ctc": CTCModel,
@@ -219,7 +206,7 @@ _MODEL_TYPES = {
 
 
 def build_model(key):
-    '''Instantiate (without loading) the model registered under ``key``.'''
+    """Instantiate (without loading) the model registered under ``key``."""
     if key not in config.MODEL_REGISTRY:
         raise KeyError(key)
     spec = dict(config.MODEL_REGISTRY[key])
@@ -229,16 +216,12 @@ def build_model(key):
     return cls(model_id=model_id, device=config.DEVICE, **spec)
 
 
-# ============================================================
-# Manager
-# ============================================================
-
 class ModelManager:
-    '''Holds at most one loaded model and serializes access to it.
+    """Holds at most one loaded model and serializes access to it.
 
     A single lock guards both loading and transcription so that concurrent
     requests cannot swap the model out from under an in-flight transcription.
-    '''
+    """
 
     def __init__(self):
         self._current_key = None
@@ -246,16 +229,16 @@ class ModelManager:
         self._lock = threading.Lock()
 
     def available(self):
-        '''Return the list of registered model keys.'''
+        """Return the list of registered model keys."""
         return list(config.MODEL_REGISTRY.keys())
 
     @property
     def loaded(self):
-        '''Return the key of the loaded model, or ``None``.'''
+        """Return the key of the loaded model, or ``None``."""
         return self._current_key
 
     def load(self, key):
-        '''Load ``key`` into memory, unloading any currently loaded model.'''
+        """Load ``key`` into memory, unloading any currently loaded model."""
         if key not in config.MODEL_REGISTRY:
             raise KeyError(key)
         with self._lock:
@@ -271,14 +254,14 @@ class ModelManager:
             self._current_key = key
 
     def transcribe(self, audio, sr, language=None):
-        '''Transcribe audio with the loaded model, erroring if none is loaded.'''
+        """Transcribe audio with the loaded model, erroring if none is loaded."""
         with self._lock:
             if self._current_model is None:
                 raise RuntimeError("no model loaded")
             return self._current_model.transcribe(audio, sr, language=language)
 
     def unload(self):
-        '''Unload the current model and free its memory. No-op if none loaded.'''
+        """Unload the current model and free its memory. No-op if none loaded."""
         with self._lock:
             if self._current_model is not None:
                 self._current_model.unload()

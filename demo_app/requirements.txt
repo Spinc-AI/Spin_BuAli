@@ -1,5 +1,3 @@
 requests
-sounddevice
-soundfile
-numpy
 python-docx
+sounddevice   # microphone capture; needs PortAudio (file input works without it)

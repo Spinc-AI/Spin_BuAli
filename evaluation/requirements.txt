@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv>=1.0
+
+# No model weights, no GPU, no network calls: scoring is pure text processing.

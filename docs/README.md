@@ -1,16 +1,23 @@
-# مستندات
+# Documentation
 
-مستندات سطح-پروژه. مستندات هر سرویس در <span dir="ltr">README</span> خودِ همان پوشه است ([`stt/`](../stt/README.md)، [`core_llm/`](../core_llm/README.md)، [`controller/`](../controller/README.md)، [`demo_app/`](../demo_app/README.md)).
+Project-level documents. Each service documents itself in its own folder:
+[`stt/`](../stt/README.md), [`core_llm/`](../core_llm/README.md),
+[`controller/`](../controller/README.md), [`evaluation/`](../evaluation/README.md),
+[`demo_app/`](../demo_app/README.md).
 
-| فایل | محتوا |
+| File | Contents |
 |---|---|
-| [`Spin_BuAli_Production_Roadmap.pdf`](Spin_BuAli_Production_Roadmap.pdf) | نقشه راه آماده‌سازی برای تولید — ۹ فاز از جمع‌آوری داده تا فاین‌تیون، ارزیابی ایمنی بالینی، استقرار و بازآموزی؛ به‌همراه بخش زیرساخت و داده‌ی موردنیاز (انگلیسی) |
-| [`Spin_BuAli_Production_Roadmap_FA.pdf`](Spin_BuAli_Production_Roadmap_FA.pdf) | همان نقشه راه، نسخه‌ی فارسی |
-| [`BuAli_Function_Reference.pdf`](BuAli_Function_Reference.pdf) | مرجع توابع پروژه |
-| [`metrics_summary.md`](metrics_summary.md) · [`.pdf`](metrics_summary.pdf) | خلاصهٔ معیارهای ارزیابی — معیارهای عمومی <span dir="ltr">STT</span> به‌همراه معیارهای بالینی (نفی، سمت، عدد، واحد، اصطلاح پزشکی، حذف بحرانی، افزودهٔ بی‌پشتوانه) و حلقهٔ پس‌ویرایش (انگلیسی) |
-| [`metrics_summary_fa.md`](metrics_summary_fa.md) · [`.pdf`](metrics_summary_fa.pdf) | همان خلاصهٔ معیارها، نسخهٔ فارسی |
+| [`Spin_BuAli_Production_Roadmap.pdf`](Spin_BuAli_Production_Roadmap.pdf) | Production readiness roadmap — 9 phases from data collection through fine-tuning, clinical safety validation, deployment and retraining, plus the infrastructure and data required (English) |
+| [`Spin_BuAli_Production_Roadmap_FA.pdf`](Spin_BuAli_Production_Roadmap_FA.pdf) | The same roadmap in Persian |
+| [`metrics_summary.md`](metrics_summary.md) · [`.pdf`](metrics_summary.pdf) | Evaluation metrics — the general STT set plus the clinical metrics (negation, laterality, number, unit, medical terms, critical omission, unsupported addition) and the post-edit loop (English) |
+| [`metrics_summary_fa.md`](metrics_summary_fa.md) · [`.pdf`](metrics_summary_fa.pdf) | The same metrics summary in Persian |
+| [`BuAli_Function_Reference.pdf`](BuAli_Function_Reference.pdf) | Function reference for the project |
 
-> `BuAli_Function_Reference.pdf` پیش از بازسازی کد تهیه شده است؛ نام و محل برخی توابع در `controller/` و `demo_app/` تغییر کرده — برای وضعیت فعلی به <span dir="ltr">README</span> هر پوشه مراجعه کنید.
+> `BuAli_Function_Reference.pdf` predates the code restructure; some function
+> names and locations in `controller/` and `demo_app/` have changed. For the
+> current state, read each folder's own README.
 
-## راه‌اندازی سرور <span dir="ltr">GPU</span>
-برای اجرای `core_llm/` روی سرور <span dir="ltr">GPU</span> (نصب <span dir="ltr">CUDA</span>، تونل <span dir="ltr">SSH</span>): [`core_llm/SERVER_SETUP.md`](../core_llm/SERVER_SETUP.md).
+## GPU server setup
+
+For running `core_llm/` on a GPU server (CUDA install, SSH tunnel):
+[`core_llm/SERVER_SETUP.md`](../core_llm/SERVER_SETUP.md).

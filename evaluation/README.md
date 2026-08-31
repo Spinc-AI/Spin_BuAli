@@ -1,26 +1,34 @@
 # Evaluation Service
 
-سرویس مستقل و بدون حالت برای امتیازدهی به یک رونویسی در برابر مرجعِ تأییدشده توسط رادیولوژیست. ورودی: دو متن. خروجی: معیارهای عمومی و بالینی به‌صورت <span dir="ltr">JSON</span>.
+Scores a transcript against a radiologist-verified reference. Two texts in,
+general and clinical metrics out as JSON.
 
-چون هیچ حالتی نگه نمی‌دارد و فقط متن می‌گیرد، می‌توان آن را در هر نقطه‌ای پس از رونویسی صدا زد، و گزارش‌های قدیمی را با نسخه‌ی جدیدِ معیارها دوباره امتیاز داد.
+It holds no state and takes only text, so it can be called at any point after
+transcription, and old reports can be re-scored when the metrics change.
 
-## ساختار فایل‌ها
-| فایل | مسئولیت |
+## Files
+
+The pipeline runs in this order:
+
+| File | Responsibility |
 |---|---|
-| `text_normalizer.py` | یکسان‌سازی ارقام، حروف، نیم‌فاصله و اعداد حروفی |
-| `extractors.py` | استخراج اندازه‌گیری، نفی، سمت، و مفاهیم بالینی |
-| `medical_metrics.py` | هم‌ترازی موجودیت‌ها و محاسبه‌ی همه‌ی معیارها (`evaluate()`) |
-| `clinical_terms.json` | واژگان مفاهیم بالینی |
-| `evaluation_schema.json` | <span dir="ltr">JSON Schema</span> خروجی |
-| `main.py` | سرویس <span dir="ltr">HTTP</span> (پیش‌فرض پورت `8002`) |
-| `evaluate_results.py` | اجرای دسته‌ای از خط فرمان، بدون سرور |
+| `text_normalizer.py` | Unify digits, letter forms, ZWNJ, and spelled-out numbers |
+| `extractors.py` | Pull out measurements, negation, laterality, and clinical concepts |
+| `medical_metrics.py` | Align the entities, then compute every metric (`evaluate()`) |
+| `clinical_terms.json` | The clinical concept vocabulary |
+| `evaluation_schema.json` | JSON Schema for the output |
+| `main.py` | HTTP service (default port `8002`) |
+| `evaluate_results.py` | Batch scoring from the command line, no server |
 
-## اجرا
+## Run
+
 ```bash
 pip install -r requirements.txt
-python main.py          # یا: run.bat (Windows) / ./run.sh (Linux)
+python main.py          # or: run.bat (Windows) / ./run.sh (Linux)
 ```
-مستندات تعاملی در `/docs`. هیچ مدلی بارگذاری نمی‌شود و هیچ <span dir="ltr">GPU</span> لازم نیست — امتیازدهی صرفاً پردازش متن است.
+
+Interactive docs at `/docs`. No model is loaded and no GPU is required —
+scoring is pure text processing.
 
 ```bash
 curl -X POST http://localhost:8002/evaluate -H "Content-Type: application/json" -d '{
@@ -32,41 +40,76 @@ curl -X POST http://localhost:8002/evaluate -H "Content-Type: application/json" 
 }'
 ```
 
-> در استقرار واقعی، این سرویس مستقیماً صدا زده نمی‌شود: کنترلر تنها درِ ورودی است و `POST /evaluate` روی پورت `9002` همین بدنه را به اینجا پاس می‌دهد. فراخوانیِ مستقیم پایین برای توسعه و تست است.
+> In deployment this service is not called directly: the controller is the only
+> entry point, and `POST /evaluate` on port `9002` passes the same body through
+> to here. The direct call above is for development and testing.
 
-## اجرای دسته‌ای
+## Batch scoring
+
 ```bash
 python evaluate_results.py manifest.json --out results/
 ```
-`manifest.json` آرایه‌ای از جفت‌هاست؛ `hypothesis`/`reference` می‌توانند متن مستقیم یا مسیر یک فایل `.txt` باشند. برای هر گزارش و هر مدل یک فایل جدا نوشته می‌شود، به‌همراه `summary.json`.
 
-نرخ‌های تجمیعی از **جمعِ شمارش‌ها** حساب می‌شوند، نه از میانگینِ نرخ‌های هر گزارش — در یک گزارش کوتاه که فقط یک نفی دارد، یک خطا نرخ ۱۰۰٪ می‌سازد و میانگین‌گیری همه‌چیز را خراب می‌کند.
+`manifest.json` is an array of pairs; `hypothesis` / `reference` may be inline
+text or the path to a `.txt` file. One result file is written per report per
+model, plus a `summary.json`.
 
-## تصمیم‌های طراحی
+Aggregate rates are computed from **summed counts**, never by averaging
+per-report rates — in a short report with a single negation, one error becomes a
+100% rate and drowns out everything else.
 
-**هم‌ترازی پیش از شمارش.** «6 mm stone» در برابر «7 mm calculus» یک خطای عدد است، نه یک افزوده به‌علاوه‌ی یک حذف. مفاهیم از طریق `clinical_terms.json` هم‌تراز می‌شوند (پس `stone` و `calculus` و `سنگ` یک مفهوم‌اند) و اندازه‌گیری‌ها ابتدا بر اساس کمیت فیزیکیِ برابر جفت می‌شوند.
+## Design decisions
 
-**کمیت فیزیکی، نه رشته‌ی واحد.** `10 mm` و `1 cm` برابرند. وقتی واقعاً فرق دارند: عددِ یکسان با واحدِ متفاوت = خطای واحد؛ واحدِ یکسان با عددِ متفاوت = خطای عدد.
+**Align before counting.** `6 mm stone` against `7 mm calculus` is one number
+error, not an addition plus an omission. Concepts are aligned through
+`clinical_terms.json` (so `stone`, `calculus` and `سنگ` are one concept), and
+measurements are paired by equal physical quantity first.
 
-**عددِ تنها اندازه‌گیری نیست.** «یک» هم عدد است و هم حرف تعریف نامعین؛ شمردن هر رقم، اندازه‌گیری‌های جعلی می‌سازد. یک عدد وقتی اندازه‌گیری است که واحد داشته باشد یا بخشی از گروه ابعادی باشد (`107 در 44`).
+**Physical quantities, not unit strings.** `10 mm` and `1 cm` are equal. When
+they genuinely differ: the same number with a different unit is a unit error,
+the same unit with a different number is a number error.
 
-**نفی فقط روی یافته‌ها.** گزارش می‌گوید «سنگ وجود ندارد»، نه «کلیه وجود ندارد». امتیازدهیِ نفی روی آناتومی فقط اندازه می‌گیرد که پنجره‌ی نفی تا کجا رسیده است.
+**A bare number is not a measurement.** In Persian the word for *one* is also
+the indefinite article, so counting every digit would invent measurements. A
+number qualifies when it carries a unit or belongs to a dimension group
+(`107 در 44`).
 
-**«بحرانی» با قاعده‌ی ساختاری تعریف شده، نه با پرچمِ دستی.** یک حذف وقتی بحرانی است که چیزِ جاافتاده یک اندازه‌گیری، یا مفهومی با نفی یا سمت باشد — بدون نیاز به قضاوت بالینی روی تک‌تک واژه‌ها.
+**Negation applies to findings only.** A report says "no stone", never "no
+kidney". Scoring negation on anatomy would just measure how far the cue window
+happened to reach.
 
-## محدودیت‌های شناخته‌شده
+**"Critical" is a structural rule, not a hand-maintained flag.** An omission is
+critical when what went missing is a measurement, or a concept the reference
+stated with a negation or a side — no per-term clinical judgement needed.
 
-**جعلِ خارج از واژگان دیده نمی‌شود.** `unsupported_additions` فقط مفاهیمی را می‌شمارد که در `clinical_terms.json` باشند. در یک آزمایش واقعی، مدلی که «سابقه‌ی ۶۸ ساله با COPD» را از خودش ساخته بود، `unsupported_additions = 0` گرفت — چون COPD واژگان قفسه‌ی سینه است و در فهرستِ شکم/لگن نیست. تنها نشانه‌ی آن `wer = 0.97` بود.
+## Known limitations
 
-پیامد عملی: اصطلاحاتِ ناشناخته را هنگام ارزیابی لاگ کنید تا واژگان از ترافیک واقعی رشد کند، و `wer`/`insertions` را به‌عنوان سیگنال مکملِ جعل نگاه کنید.
+**Fabrication outside the vocabulary is invisible.** `unsupported_additions`
+only counts concepts that exist in `clinical_terms.json`. In a real test, a
+model that invented a *"68-year-old male with COPD"* history scored
+`unsupported_additions = 0`, because COPD is chest vocabulary and this is an
+abdomen/pelvis list. The only signal was `wer = 0.97`.
 
-**`clinical_terms.json` فعلاً یک بذر است.** حدود ۴۰ مفهوم، ساخته‌شده از دیکته‌های مشاهده‌شده و محدود به سونوگرافی شکم/لگن. برای پوشش واقعی: <span dir="ltr">RadLex</span> به‌عنوان ستون فقراتِ انگلیسی (رایگان، دقیقاً همین حوزه) + استخراج فراوانی از کورپوس خودتان + یک پاس رادیولوژیست برای مترادف‌ها.
+Practical consequence: log unrecognised terms during evaluation so the
+vocabulary grows from real traffic, and read `wer` / `insertions` as the
+complementary fabrication signal.
 
-**نسخه‌ها را جدی بگیرید.** هر خروجی `metrics_version` و `terms_sha` دارد. اضافه‌کردن اصطلاح یا اصلاح یک مقایسه‌گر، اعداد را به‌تنهایی جابه‌جا می‌کند؛ نتایج فقط بین گزارش‌هایی با نسخه‌ی یکسان قابل مقایسه‌اند.
+**`clinical_terms.json` is currently a seed.** Around 40 concepts, built from
+observed dictations and scoped to abdominal / pelvic ultrasound. For real
+coverage: RadLex as the English backbone (freely licensed, exactly this domain),
+plus frequency mining over your own corpus, plus a radiologist pass for
+synonyms.
 
-## تست
+**Take the versions seriously.** Every result carries `metrics_version` and
+`terms_sha`. Adding a term or fixing a comparator moves the numbers on its own,
+so results are only comparable between reports scored with the same versions.
+
+## Tests
+
 ```bash
 pip install pytest
 python -m pytest tests/
 ```
-تست‌ها مطابق خواسته‌ی سند تسک، نفی/سمت/عدد/واحد را جداگانه پوشش می‌دهند. هیچ مدلی بارگذاری نمی‌شود و هیچ درخواست شبکه‌ای ارسال نمی‌شود.
+
+Negation, laterality, number and unit each have their own test file, as the task
+document asks. No model is loaded and no network request is made.

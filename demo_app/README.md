@@ -1,41 +1,57 @@
 # BuAli Demo App
 
-کلاینت دسکتاپیِ <span dir="ltr">Tkinter</span> برای کنترلر <span dir="ltr">BuAli</span> — یک پنجره‌ی قابل اسکرول: انتخاب پایپ‌لاین (<span dir="ltr">Separate</span>/<span dir="ltr">Multimodal</span>/<span dir="ltr">Hybrid</span>)، تا ۳ اسلات <span dir="ltr">STT</span> مستقل، انتخاب مدل <span dir="ltr">LLM</span> (محلی یا ابری)، ورودی صوت (فایل یا ضبط میکروفون)، اجرا، خروجی، و ذخیره‌ی متن نهایی به‌صورت <span dir="ltr">Word (.docx)</span>.
+A Tkinter desktop client for the BuAli controller, for testing by hand. One
+scrollable window: pick a pipeline (Separate / Multimodal / Hybrid), configure
+up to 3 independent STT slots, choose an LLM (local or cloud), load or record
+audio, run it, and save the finished report as a Word document.
 
-## ساختار فایل‌ها
-| فایل | مسئولیت |
+## Files
+
+| File | Responsibility |
 |---|---|
-| `app.py` | پنجره‌ی اصلی و اتصال اجزا (نقطه‌ی شروع) |
-| `api.py` | تمام تماس‌های <span dir="ltr">HTTP</span> با کنترلر |
-| `widgets.py` | ویجت‌های قابل استفاده‌ی مجدد (بدون <span dir="ltr">HTTP</span> و بدون thread) |
-| `audio.py` | ضبط میکروفون |
-| `export.py` | خروجی <span dir="ltr">Word</span> و تشخیص راست‌به‌چپ |
-| `config.py` | ثابت‌ها |
+| `app.py` | The main window and the wiring between parts (entry point) |
+| `api.py` | Every HTTP call to the controller |
+| `widgets.py` | Reusable widgets — no HTTP, no threading |
+| `audio.py` | Microphone capture |
+| `export.py` | Word export and right-to-left detection |
+| `config.py` | Constants |
 
-## اجرا
+## Run
+
 ```bash
 pip install -r requirements.txt
-python app.py          # یا: run.bat (Windows) / ./run.sh (Linux)
+python app.py          # or: run.bat (Windows) / ./run.sh (Linux)
 ```
-پیش از اجرا، کنترلر <span dir="ltr">BuAli</span> باید روی `localhost:9002` (یا آدرس دلخواه، در کادر Host/Port) در حال اجرا باشد.
 
-فهرست مدل‌های محلی (هم <span dir="ltr">STT</span> و هم <span dir="ltr">LLM</span>) از خود کنترلر گرفته می‌شود، نه از یک لیست ثابت در کد — پس با تغییر رجیستریِ سرویس‌ها، این برنامه خود‌به‌خود به‌روز می‌ماند. اگر کنترلر در دسترس نباشد، فهرست‌ها خالی می‌مانند؛ دکمه‌ی `Refresh` را بعد از برقراری اتصال بزنید.
+The controller must already be running on `localhost:9002`, or wherever you
+point the Host/Port fields.
 
-ضبط میکروفون به <span dir="ltr">PortAudio</span> نیاز دارد؛ اگر نصب نباشد بقیه‌ی برنامه (اجرا از روی فایل) بدون مشکل کار می‌کند.
+The local model lists — both STT and LLM — are fetched from the controller
+rather than hard-coded, so this app stays current as the service registries
+change. If the controller is unreachable the lists stay empty; press `Refresh`
+once the connection is up.
 
-## استفاده
-۱. آدرس کنترلر را بررسی کنید (`Check connection`).
-۲. پایپ‌لاین را انتخاب کنید:
-   - **Separate**: تا ۳ اسلات <span dir="ltr">STT</span> را فعال و پیکربندی کنید (هرکدام محلی یا ابری).
-   - **Multimodal**: فقط مدل <span dir="ltr">LLM</span> صوت‌پذیر را انتخاب کنید؛ اسلات‌های <span dir="ltr">STT</span> پنهان می‌شوند.
-   - **Hybrid**: هم اسلات(های) <span dir="ltr">STT</span> و هم مدل <span dir="ltr">LLM</span> صوت‌پذیر را پیکربندی کنید.
-۳. منبع <span dir="ltr">LLM</span> را انتخاب کنید (محلی یا ابری؛ برای صوت ابری با <span dir="ltr">Gemini</span>، مدل را با پیشوند <span dir="ltr">`gemini:`</span> بنویسید).
-۴. `Start session` را بزنید.
-۵. فایل صوتی را انتخاب یا ضبط کنید.
-۶. `Run` را بزنید؛ نتیجه (شامل `raw_transcript`/`corrected_transcript`/`final_text`/`discrepancies_found`/`notes`) در کادر خروجی نمایش داده می‌شود.
-۷. در صورت نیاز، با `Save Transcript (.docx)` متن نهایی را در یک فایل <span dir="ltr">Word</span> ذخیره کنید (راست‌به‌چپ خودکار برای متن فارسی).
+Microphone recording needs PortAudio. Without it the rest of the app still
+works normally for file-based runs.
 
-## تست
+## Using it
+
+1. Check the controller address (`Check connection`).
+2. Pick a pipeline:
+   - **Separate** — enable and configure up to 3 STT slots (each local or cloud).
+   - **Multimodal** — choose an audio-capable LLM; the STT slots are hidden.
+   - **Hybrid** — configure both the STT slot(s) and an audio-capable LLM.
+3. Choose the LLM source (local or cloud). For cloud audio through Gemini,
+   prefix the model with `gemini:`.
+4. Press `Start session`.
+5. Choose or record an audio file.
+6. Press `Run`. The result — `raw_transcript`, `corrected_transcript`,
+   `final_text`, `discrepancies_found`, `notes` — appears in the output box.
+7. Optionally press `Save Transcript (.docx)` to write the final text to a Word
+   file (Persian paragraphs are marked right-to-left automatically).
+
+## Tests
+
 ```bash
 pip install pytest
 python -m pytest tests/

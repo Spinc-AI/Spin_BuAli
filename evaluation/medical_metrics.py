@@ -144,39 +144,56 @@ def classify_measurement_error(reference, hypothesis):
     return errors
 
 
-# --- The report ------------------------------------------------------------
-def evaluate(hypothesis_text, reference_text, terms=None):
-    """Score one report against its reference.
+# --- Comparing the two texts -----------------------------------------------
+@dataclass(frozen=True)
+class ConceptComparison:
+    """How the two texts agreed about clinical concepts."""
+    reference: dict
+    hypothesis: dict
+    matched: set
+    only_reference: set
+    only_hypothesis: set
+    negation_errors: int
+    negation_scored: int
+    laterality_errors: int
+    laterality_scored: int
+    critical_errors: list
 
-    `hypothesis_text` is what the pipeline produced; `reference_text` is the
-    radiologist-verified version.
+
+@dataclass(frozen=True)
+class MeasurementComparison:
+    """How the two texts agreed about measured values."""
+    reference_count: int
+    hypothesis_count: int
+    number_errors: int
+    unit_errors: int
+    missing: list
+    extra: list
+    critical_errors: list
+
+
+def _index_by_concept(mentions):
+    """One entry per concept; the first mention carries its negation and side."""
+    indexed = {}
+    for mention in mentions:
+        indexed.setdefault(mention.concept_id, mention)
+    return indexed
+
+
+def _compare_concepts(reference, hypothesis):
+    """Negation and laterality, judged only on concepts present in both texts.
+
+    A concept in just one text is a term-level miss, already counted by
+    precision and recall; comparing its negation against nothing would mean
+    nothing.
     """
-    terms = terms or ClinicalTerms()
-
-    reference_tokens = tokenize(reference_text)
-    hypothesis_tokens = tokenize(hypothesis_text)
-    reference_mentions = terms.find(reference_tokens)
-    hypothesis_mentions = terms.find(hypothesis_tokens)
-
-    # One entry per concept: the first mention carries its negation and side.
-    reference_concepts = {}
-    for mention in reference_mentions:
-        reference_concepts.setdefault(mention.concept_id, mention)
-    hypothesis_concepts = {}
-    for mention in hypothesis_mentions:
-        hypothesis_concepts.setdefault(mention.concept_id, mention)
-
-    matched = set(reference_concepts) & set(hypothesis_concepts)
-    only_hypothesis = set(hypothesis_concepts) - set(reference_concepts)
-    only_reference = set(reference_concepts) - set(hypothesis_concepts)
-
-    critical_errors = []
-
-    # Negation and laterality are only meaningful on concepts present in both.
+    matched = set(reference) & set(hypothesis)
     negation_errors = negation_scored = 0
     laterality_errors = laterality_scored = 0
+    critical_errors = []
+
     for concept_id in sorted(matched):
-        expected, produced = reference_concepts[concept_id], hypothesis_concepts[concept_id]
+        expected, produced = reference[concept_id], hypothesis[concept_id]
 
         if expected.category in NEGATABLE_CATEGORIES:
             negation_scored += 1
@@ -198,55 +215,94 @@ def evaluate(hypothesis_text, reference_text, terms=None):
                     "prediction": produced.laterality,
                 })
 
-    # Measurements
-    reference_measurements = extract_measurements(reference_text)
-    hypothesis_measurements = extract_measurements(hypothesis_text)
-    pairs, missing_measurements, extra_measurements = align_measurements(
-        reference_measurements, hypothesis_measurements)
+    return ConceptComparison(
+        reference=reference, hypothesis=hypothesis, matched=matched,
+        only_reference=set(reference) - set(hypothesis),
+        only_hypothesis=set(hypothesis) - set(reference),
+        negation_errors=negation_errors, negation_scored=negation_scored,
+        laterality_errors=laterality_errors, laterality_scored=laterality_scored,
+        critical_errors=critical_errors,
+    )
+
+
+def _compare_measurements(reference_text, hypothesis_text):
+    """Align the measurements, then judge each pair."""
+    reference = extract_measurements(reference_text)
+    hypothesis = extract_measurements(hypothesis_text)
+    pairs, missing, extra = align_measurements(reference, hypothesis)
 
     number_errors = unit_errors = 0
+    critical_errors = []
     for expected, produced in pairs:
         kinds = classify_measurement_error(expected, produced)
-        if "number" in kinds:
-            number_errors += 1
-        if "unit" in kinds:
-            unit_errors += 1
+        number_errors += "number" in kinds
+        unit_errors += "unit" in kinds
         if kinds:
             critical_errors.append({
                 "type": "measurement_mismatch", "concept": "measurement",
                 "reference": _format(expected), "prediction": _format(produced),
             })
-    for expected in missing_measurements:
+    for expected in missing:
         critical_errors.append({
             "type": "measurement_omission", "concept": "measurement",
             "reference": _format(expected), "prediction": None,
         })
 
-    # A missing concept is critical when the reference stated it with a
-    # negation or a side -- that is content a reader would act on.
-    critical_concept_omissions = [
-        concept_id for concept_id in sorted(only_reference)
-        if reference_concepts[concept_id].negated
-        or reference_concepts[concept_id].laterality is not None
-    ]
-    critical_omissions = len(missing_measurements) + len(critical_concept_omissions)
-    unsupported_additions = len(extra_measurements) + len(only_hypothesis)
+    return MeasurementComparison(
+        reference_count=len(reference), hypothesis_count=len(hypothesis),
+        number_errors=number_errors, unit_errors=unit_errors,
+        missing=missing, extra=extra, critical_errors=critical_errors,
+    )
 
-    true_positives = len(matched)
-    false_positives = len(only_hypothesis)
-    false_negatives = len(only_reference)
+
+def _dropped_critical_concepts(concepts):
+    """Concepts the reference stated with a negation or a side that the output
+    dropped entirely -- content a reader would have acted on."""
+    return [
+        concept_id for concept_id in sorted(concepts.only_reference)
+        if concepts.reference[concept_id].negated
+        or concepts.reference[concept_id].laterality is not None
+    ]
+
+
+def _term_scores(true_positives, false_positives, false_negatives):
+    """Precision, recall and F1 over concept identities."""
     precision = _ratio(true_positives, true_positives + false_positives)
     recall = _ratio(true_positives, true_positives + false_negatives)
-    f1 = _ratio(2 * precision * recall, precision + recall)
+    return precision, recall, _ratio(2 * precision * recall, precision + recall)
+
+
+# --- The report ------------------------------------------------------------
+def evaluate(hypothesis_text, reference_text, terms=None):
+    """Score one report against its reference.
+
+    `hypothesis_text` is what the pipeline produced; `reference_text` is the
+    radiologist-verified version.
+    """
+    terms = terms or ClinicalTerms()
+
+    concepts = _compare_concepts(
+        _index_by_concept(terms.find(tokenize(reference_text))),
+        _index_by_concept(terms.find(tokenize(hypothesis_text))))
+    measurements = _compare_measurements(reference_text, hypothesis_text)
+
+    dropped = _dropped_critical_concepts(concepts)
+    critical_omissions = len(measurements.missing) + len(dropped)
+    unsupported_additions = len(measurements.extra) + len(concepts.only_hypothesis)
+
+    true_positives = len(concepts.matched)
+    false_positives = len(concepts.only_hypothesis)
+    false_negatives = len(concepts.only_reference)
+    precision, recall, f1 = _term_scores(true_positives, false_positives, false_negatives)
 
     wer = word_error_rate(reference_text, hypothesis_text)
     cer = character_error_rate(reference_text, hypothesis_text)
 
     reasons = [name for name, count in (
-        ("negation_errors", negation_errors),
-        ("laterality_errors", laterality_errors),
-        ("number_errors", number_errors),
-        ("unit_errors", unit_errors),
+        ("negation_errors", concepts.negation_errors),
+        ("laterality_errors", concepts.laterality_errors),
+        ("number_errors", measurements.number_errors),
+        ("unit_errors", measurements.unit_errors),
         ("critical_omissions", critical_omissions),
         ("unsupported_additions", unsupported_additions),
     ) if count]
@@ -261,16 +317,16 @@ def evaluate(hypothesis_text, reference_text, terms=None):
             "reference_words": wer.reference_length,
         },
         "clinical_counts": {
-            "reference_entities": len(reference_concepts),
+            "reference_entities": len(concepts.reference),
             "matched_entities": true_positives,
             "true_positive_terms": true_positives,
             "false_positive_terms": false_positives,
             "false_negative_terms": false_negatives,
-            "reference_measurements": len(reference_measurements),
-            "negation_errors": negation_errors,
-            "laterality_errors": laterality_errors,
-            "number_errors": number_errors,
-            "unit_errors": unit_errors,
+            "reference_measurements": measurements.reference_count,
+            "negation_errors": concepts.negation_errors,
+            "laterality_errors": concepts.laterality_errors,
+            "number_errors": measurements.number_errors,
+            "unit_errors": measurements.unit_errors,
             "critical_omissions": critical_omissions,
             "unsupported_additions": unsupported_additions,
         },
@@ -278,18 +334,22 @@ def evaluate(hypothesis_text, reference_text, terms=None):
             "medical_term_precision": round(precision, 4),
             "medical_term_recall": round(recall, 4),
             "medical_term_f1": round(f1, 4),
-            "negation_error_rate": round(_ratio(negation_errors, negation_scored), 4),
-            "laterality_error_rate": round(_ratio(laterality_errors, laterality_scored), 4),
-            "number_error_rate": round(_ratio(number_errors, len(reference_measurements)), 4),
-            "unit_error_rate": round(_ratio(unit_errors, len(reference_measurements)), 4),
+            "negation_error_rate": round(
+                _ratio(concepts.negation_errors, concepts.negation_scored), 4),
+            "laterality_error_rate": round(
+                _ratio(concepts.laterality_errors, concepts.laterality_scored), 4),
+            "number_error_rate": round(
+                _ratio(measurements.number_errors, measurements.reference_count), 4),
+            "unit_error_rate": round(
+                _ratio(measurements.unit_errors, measurements.reference_count), 4),
             "critical_omission_rate": round(
                 _ratio(critical_omissions,
-                       len(reference_measurements) + len(critical_concept_omissions)), 4),
+                       measurements.reference_count + len(dropped)), 4),
             "unsupported_addition_rate": round(
                 _ratio(unsupported_additions,
-                       len(hypothesis_measurements) + len(hypothesis_concepts)), 4),
+                       measurements.hypothesis_count + len(concepts.hypothesis)), 4),
         },
-        "critical_errors": critical_errors,
+        "critical_errors": concepts.critical_errors + measurements.critical_errors,
         "requires_medical_review": bool(reasons),
         "review_reasons": reasons,
         "evaluation": {

@@ -1,65 +1,93 @@
 # BuAli Controller
 
-سرویس <span dir="ltr">HTTP</span> سبک و تک‌منظوره — تبدیل گزارش رادیولوژیِ گفتاری به متن اصلاح‌شده، در سه پایپ‌لاین. منطق بوعلی مستقیم در پایتون نوشته شده (`pipelines.py`)، بدون لایه‌ی انتزاعیِ عمومی.
+The entry point for the whole system, and the only service callers address
+directly. It turns a spoken radiology report into a corrected report through
+one of three pipelines, and forwards scoring requests to `evaluation/`.
 
-<span dir="ltr">STT</span> و <span dir="ltr">Core_LLM</span> بخشی از همین ریپو هستند (`../stt/`، `../core_llm/`)؛ این کنترلر فقط یک کلاینتِ <span dir="ltr">HTTP</span> برای آن‌هاست.
+The pipeline logic is written directly in Python (`pipelines.py`) rather than
+driven by a generic instruction engine — same behaviour, no abstraction layer
+to read through first.
 
-## ساختار فایل‌ها
-| فایل | مسئولیت |
+## Files
+
+| File | Responsibility |
 |---|---|
-| `main.py` | مسیرهای <span dir="ltr">HTTP</span>، اعتبارسنجی، و جلسه‌ی فعال |
-| `pipelines.py` | سه پایپ‌لاین و ترتیب اجرای آن‌ها |
-| `prompts.py` | system prompt ها و قالب <span dir="ltr">JSON</span> خروجی |
-| `providers.py` | مسیریابیِ مدل (محلی/<span dir="ltr">OpenAI</span>/<span dir="ltr">Gemini</span>)، اعتبارنامه‌ها، فرمت‌های صوتیِ مجاز |
-| `stt_client.py` | کلاینت <span dir="ltr">HTTP</span> سرویس <span dir="ltr">STT</span> |
-| `llm_client.py` | کلاینت <span dir="ltr">HTTP</span> مدل زبانی (هر سه ارائه‌دهنده) |
-| `evaluation_client.py` | کلاینت <span dir="ltr">HTTP</span> سرویس ارزیابی |
-| `schemas.py` | شکل درخواست/پاسخ‌ها |
+| `main.py` | HTTP routes, validation, and the active session |
+| `pipelines.py` | The three pipelines and the order they run in |
+| `prompts.py` | System prompts and the JSON output template |
+| `providers.py` | Model routing (local / OpenAI / Gemini), credentials, accepted audio formats |
+| `stt_client.py` | HTTP client for the STT service |
+| `llm_client.py` | HTTP client for the language model (all three providers) |
+| `evaluation_client.py` | HTTP client for the evaluation service |
+| `schemas.py` | Request and response shapes |
 
-## پایپ‌لاین‌ها
-| پایپ‌لاین | رفتار |
+## Pipelines
+
+| Pipeline | Behaviour |
 |---|---|
-| `separate` (پیش‌فرض) | تا ۳ موتور <span dir="ltr">STT</span> مستقل صوت را رونویسی می‌کنند؛ یک <span dir="ltr">LLM</span> رونویسی‌ها را با هم تطبیق می‌دهد. |
-| `multimodal` | <span dir="ltr">STT</span> حذف می‌شود؛ صوت مستقیم به یک <span dir="ltr">LLM</span> صوت‌پذیر داده می‌شود. |
-| `hybrid` | هر دو همزمان: اسلات(های) <span dir="ltr">STT</span> اجرا می‌شوند **و** <span dir="ltr">LLM</span> خودش صوت را می‌شنود؛ رونویسی‌ها به‌عنوان مرجع (نه منبع اصلی حقیقت) داده می‌شوند. |
+| `separate` (default) | Up to 3 independent STT engines transcribe the audio; an LLM reconciles the transcripts. |
+| `multimodal` | No STT at all — the audio goes straight to an audio-capable LLM. |
+| `hybrid` | Both: the STT slots run **and** the LLM hears the audio itself, with the transcripts passed as reference material rather than ground truth. |
 
-`multimodal` در عمل همان `hybrid` بدون اسلات <span dir="ltr">STT</span> است و هر دو یک مسیر کد مشترک دارند.
+`multimodal` is `hybrid` with no STT slots configured, so the two share one code
+path instead of having a function each.
 
-## انتخاب مدل
-با پیشوند مدل مشخص می‌شود (`providers.py`): بدون پیشوند → محلی؛ `openai:<model>` → یک <span dir="ltr">API</span> سازگار با <span dir="ltr">OpenAI</span>؛ `gemini:<model>` → <span dir="ltr">API</span> بومیِ <span dir="ltr">Gemini</span>. هر سه ارائه‌دهنده در هر سه پایپ‌لاین کار می‌کنند (برای `multimodal`/`hybrid` مدل باید صوت‌پذیر باشد).
+## Choosing a model
 
-## اجرا
+The provider is carried in the model name (see `providers.py`):
+
+| Prefix | Goes to |
+|---|---|
+| *(none)* | the local service in this repo |
+| `openai:<model>` | any OpenAI-compatible API |
+| `gemini:<model>` | Gemini's native generateContent API |
+
+All three providers work in all three pipelines. For `multimodal` and `hybrid`
+the model must be able to accept audio.
+
+## Run
+
 ```bash
 pip install -r requirements.txt
-python main.py          # یا: run.bat (Windows) / ./run.sh (Linux)
+python main.py          # or: run.bat (Windows) / ./run.sh (Linux)
 ```
-روی `0.0.0.0:9002` بالا می‌آید (مستندات تعاملی در `/docs`).
+
+Binds to `0.0.0.0:9002`. Interactive docs at `/docs`.
 
 ## API
-| متد و مسیر | کاربرد |
+
+| Method and path | Purpose |
 |---|---|
-| `GET /` | سلامت سرویس + وضعیت <span dir="ltr">STT</span>/<span dir="ltr">LLM</span> |
-| `GET /models` | پروکسیِ مدل‌های محلیِ <span dir="ltr">STT</span> |
-| `GET /llm/models` | پروکسیِ مدل‌های محلیِ <span dir="ltr">LLM</span> + زیرمجموعه‌ی صوت‌پذیر |
-| `GET /languages` | پروکسیِ زبان‌های پشتیبانی‌شده |
-| `GET /status` | جلسه‌ی فعال فعلی (کلیدهای <span dir="ltr">API</span> هرگز برگردانده نمی‌شوند) |
-| `POST /session` | بدنه: `{llm_model, pipeline?, language?, stt_slots?, llm_api_key?, llm_base_url?}` |
-| `POST /run` | multipart: `file` (صوت، الزامی) + بازنویسی‌های اختیاری: `language`, `llm_api_key`, `llm_base_url`, `stt_slots_json` |
-| `POST /session/unload` | آزادسازی مدل‌ها، پایان جلسه |
-| `POST /evaluate` | امتیازدهی یک رونویسی در برابر مرجع — پاس‌ترو به سرویس <span dir="ltr">evaluation</span> |
+| `GET /` | Service health, plus whether STT / LLM / evaluation are reachable |
+| `GET /models` | Proxy for the local STT model registry |
+| `GET /llm/models` | Proxy for the local LLM registry, and its audio-capable subset |
+| `GET /languages` | Proxy for the supported language codes |
+| `GET /status` | The active session (API keys are never returned) |
+| `POST /session` | Body: `{llm_model, pipeline?, language?, stt_slots?, llm_api_key?, llm_base_url?}` |
+| `POST /run` | multipart: `file` (audio, required) plus optional overrides: `language`, `llm_api_key`, `llm_base_url`, `stt_slots_json` |
+| `POST /session/unload` | Free the models and end the session |
+| `POST /evaluate` | Score a transcript against a reference — passed through to `evaluation/` |
 
-کنترلر تنها درِ ورودیِ سیستم است؛ ماژول‌های `stt/`، `core_llm/` و `evaluation/` مستقیماً صدا زده نمی‌شوند. `POST /evaluate` بدنه را بدون تفسیر به سرویس <span dir="ltr">evaluation</span> می‌فرستد و پاسخ را همان‌طور برمی‌گرداند — قرارداد معیارها متعلق به همان ماژولی می‌ماند که پیاده‌اش کرده.
+The controller is the only door into the system: `stt/`, `core_llm/` and
+`evaluation/` are never called directly. `POST /evaluate` forwards the body
+without interpreting it and returns the reply as received, so the metric
+contract stays owned by the module that implements it.
 
-اعتبارنامه‌ی <span dir="ltr">STT</span> در خودِ هر اسلات تعریف می‌شود (`stt_slots[].api_key` / `.base_url`)، نه در سطح جلسه.
+STT credentials belong to each slot (`stt_slots[].api_key` / `.base_url`), not
+to the session.
 
-## تست
+## Tests
+
 ```bash
 pip install pytest
 python -m pytest tests/
 ```
-تست‌ها سرویس‌های <span dir="ltr">STT</span>/<span dir="ltr">LLM</span> را شبیه‌سازی می‌کنند — هیچ مدلی بارگذاری نمی‌شود و هیچ درخواست شبکه‌ای ارسال نمی‌شود.
 
-## نمونه
+The STT, LLM and evaluation services are stubbed — no model is loaded and no
+network request is made.
+
+## Examples
+
 ```bash
 curl -X POST http://localhost:9002/session -H "Content-Type: application/json" \
   -d '{"pipeline": "separate", "llm_model": "aya-expanse-8b",

@@ -1,51 +1,92 @@
 # Spin BuAli
 
-پروژه‌ای کاملاً مستقل و سبک برای تبدیل گزارش رادیولوژیِ گفتاری به متن اصلاح‌شده. چهار سرویس در همین ریپو زندگی می‌کنند و از طریق <span dir="ltr">HTTP</span> با هم صحبت می‌کنند — کل پروژه با یک `git clone` قابل اجراست و به هیچ ریپوی دیگری وابسته نیست.
+Turns a spoken radiology report into a corrected written report. Five services
+live in this repo and talk to each other over HTTP — a single `git clone` runs
+the whole system, with no dependency on any other project.
 
-## ساختار
-| پوشه | نقش | پورت پیش‌فرض |
+## How the pieces fit together
+
+```
+                    ┌──────────────┐
+   your website ───▶│  controller  │ :9002   the only entry point
+   / demo_app       └──────┬───────┘
+                           │ HTTP
+          ┌────────────────┼────────────────┐
+          ▼                ▼                ▼
+   ┌────────────┐   ┌────────────┐   ┌──────────────┐
+   │    stt     │   │  core_llm  │   │  evaluation  │
+   │   :8000    │   │   :8001    │   │    :8002     │
+   └────────────┘   └────────────┘   └──────────────┘
+    speech → text   text/audio → text     scoring
+```
+
+Nothing behind the controller is addressed directly. Callers reach speech
+recognition, the language model and scoring through it, so there is one door
+into the system and one place where validation and credentials live.
+
+## Modules
+
+| Folder | Role | Port |
 |---|---|---|
-| [`stt/`](stt/README.md) | سرویس تشخیص گفتار (۱۰ مدل فارسی) | `8000` |
-| [`core_llm/`](core_llm/README.md) | سرویس مدل زبانی، شامل مسیر صوت‌پذیر | `8001` |
-| [`controller/`](controller/README.md) | مغز بوعلی: سه پایپ‌لاین، system prompt ها، جلسه | `9002` |
-| [`demo_app/`](demo_app/README.md) | کلاینت دسکتاپیِ <span dir="ltr">Tkinter</span> برای تست دستی | — |
-| [`evaluation/`](evaluation/README.md) | امتیازدهی رونویسی در برابر مرجعِ تأییدشده — معیارهای عمومی و بالینی | `8002` |
-| [`docs/`](docs/README.md) | نقشه راه و مستندات مرجع | — |
+| [`stt/`](stt/README.md) | Speech recognition (10 Persian models) | `8000` |
+| [`core_llm/`](core_llm/README.md) | Language model, including the audio-capable path | `8001` |
+| [`evaluation/`](evaluation/README.md) | Scores a transcript against a verified reference | `8002` |
+| [`controller/`](controller/README.md) | BuAli's brain: the three pipelines, prompts, session | `9002` |
+| [`demo_app/`](demo_app/README.md) | Tkinter desktop client for manual testing | — |
+| [`docs/`](docs/README.md) | Roadmap and reference documents | — |
 
-هر پوشه یک سرویس مستقل و جداگانه‌قابل‌استقرار است: `requirements.txt` خودش، `config.py` خودش، و بدون import مستقیم از بقیه.
+Each folder is an independently deployable service: its own `requirements.txt`,
+its own `config.py`, and no direct imports from any other module. Moving one to
+a different machine means changing a URL and nothing else.
 
-## شروع سریع
-هر سرویس در ترمینال جداگانه (به همین ترتیب بالا بیایند — کنترلر در `/session` سلامتِ `stt`/`core_llm` را چک می‌کند):
+## Quick start
+
+One terminal per service, started in this order — the controller checks that
+`stt` and `core_llm` are reachable when a session begins:
+
 ```bash
-# ترمینال ۱ — STT
+# terminal 1 — STT
 cd stt && pip install -r requirements.txt && python -m app.main
 
-# ترمینال ۲ — Core_LLM
+# terminal 2 — Core_LLM
 cd core_llm && pip install -r requirements.txt && python main.py
 
-# ترمینال ۳ — کنترلر بوعلی
+# terminal 3 — evaluation
+cd evaluation && pip install -r requirements.txt && python main.py
+
+# terminal 4 — the BuAli controller
 cd controller && pip install -r requirements.txt && python main.py
 
-# ترمینال ۴ — دمو
+# terminal 5 — the demo client
 cd demo_app && pip install -r requirements.txt && python app.py
 ```
-همه‌چیز روی `localhost` و پورت‌های پیش‌فرض بالا می‌آید. پایپ‌لاین‌های <span dir="ltr">Multimodal</span>/<span dir="ltr">Hybrid</span> به یک مدل صوت‌پذیر (`gemma-4-e4b`/`gemma-4-12b`/`qwen3-omni-30b`) در `core_llm/` نیاز دارند که VRAM قابل توجهی می‌طلبد — یا به‌جایش از یک مدل ابری (`openai:`/`gemini:`) استفاده کنید. اولین اجرای هر مدل، وزن‌هایش را از <span dir="ltr">Hugging Face</span> دانلود می‌کند (کش می‌شود، فقط بار اول کند است).
 
-> برای فقط تست کنترلر با مدل ابری، `stt/` و `core_llm/` لازم نیستند: پایپ‌لاین `multimodal` با یک مدل `gemini:`/`openai:` هیچ سرویس محلی‌ای نمی‌خواهد.
+Everything binds to `localhost` on the ports above. The `multimodal` and
+`hybrid` pipelines need an audio-capable model (`gemma-4-e4b`, `gemma-4-12b`,
+`qwen3-omni-30b`) in `core_llm/`, which wants serious VRAM — or use a cloud
+model (`openai:` / `gemini:`) instead. The first run of any model downloads its
+weights from Hugging Face; that is slow once, then cached.
 
-## پایپ‌لاین‌ها
-| پایپ‌لاین | صوت به <span dir="ltr">LLM</span> | رونویسی <span dir="ltr">STT</span> |
+> To try the controller with a cloud model only, `stt/` and `core_llm/` are not
+> needed: the `multimodal` pipeline with a `gemini:` or `openai:` model calls no
+> local service.
+
+## The three pipelines
+
+| Pipeline | Audio to the LLM | STT transcripts |
 |---|---|---|
-| `separate` | ❌ | ✅ (تا ۳ موتور، سپس تطبیق توسط <span dir="ltr">LLM</span>) |
+| `separate` | ❌ | ✅ up to 3 engines, then an LLM reconciles them |
 | `multimodal` | ✅ | ❌ |
-| `hybrid` | ✅ | ✅ (به‌عنوان مرجع، نه منبع اصلی حقیقت) |
+| `hybrid` | ✅ | ✅ passed as reference material, not ground truth |
 
-جزئیات و انتخاب مدل محلی/ابری در [controller/README.md](controller/README.md).
+Model routing and the local/cloud prefix convention are documented in
+[controller/README.md](controller/README.md).
 
-## تست
+## Tests
+
 ```bash
-cd controller && python -m pytest tests/     # کنترلر (بدون شبکه، بدون مدل)
-cd evaluation && python -m pytest tests/     # نرمال‌سازی و معیارهای بالینی
-cd demo_app   && python -m pytest tests/     # خروجی Word و نام فایل‌ها
-cd stt        && python -m pytest tests/     # نیازمند نصب torch
+cd controller && python -m pytest tests/     # routing, pipelines, session (no network, no models)
+cd evaluation && python -m pytest tests/     # normalisation and the clinical metrics
+cd demo_app   && python -m pytest tests/     # Word export and filenames
+cd stt        && python -m pytest tests/     # requires torch
 ```

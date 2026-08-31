@@ -17,15 +17,25 @@ class EvaluationRequest(BaseModel):
     reference: str = Field(description="The radiologist-verified text")
     pipeline: str | None = Field(default=None, description="separate | multimodal | hybrid")
     model_version: str | None = Field(default=None, description="Version/checkpoint of the model")
+    include_semantic: bool = Field(
+        default=False,
+        description="Also compute BERTScore and semantic similarity. These load a "
+                    "model, so they are off by default; GET / reports whether the "
+                    "optional dependencies are installed.")
 
 
 class GeneralMetrics(BaseModel):
     wer: float
     cer: float
+    chrf: float
     substitutions: int
     insertions: int
     deletions: int
     reference_words: int
+    hypothesis_words: int
+    hallucination_ratio: float   # output length over reference length
+    repetition_score: float      # share of repeated n-grams; the loop detector
+    punctuation_f1: float
 
 
 class ClinicalCounts(BaseModel):
@@ -53,6 +63,12 @@ class ClinicalMetrics(BaseModel):
     unit_error_rate: float
     critical_omission_rate: float
     unsupported_addition_rate: float
+
+
+class SemanticMetrics(BaseModel):
+    """Only present when the request asked for them."""
+    bertscore_f1: float
+    semantic_similarity: float
 
 
 class CriticalError(BaseModel):
@@ -84,6 +100,7 @@ class EvaluationResponse(BaseModel):
     general: GeneralMetrics
     clinical_counts: ClinicalCounts
     clinical_metrics: ClinicalMetrics
+    semantic: SemanticMetrics | None = None
     critical_errors: list[CriticalError]
     requires_medical_review: bool
     review_reasons: list[str]

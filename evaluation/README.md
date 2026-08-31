@@ -14,11 +14,73 @@ The pipeline runs in this order:
 |---|---|
 | `text_normalizer.py` | Unify digits, letter forms, ZWNJ, and spelled-out numbers |
 | `extractors.py` | Pull out measurements, negation, laterality, and clinical concepts |
+| `general_metrics.py` | Text-level metrics: WER, CER, chrF, and the failure-shape signals |
 | `medical_metrics.py` | Align the entities, then compute every metric (`evaluate()`) |
+| `semantic_metrics.py` | The two optional embedding metrics — loaded only if asked for |
 | `clinical_terms.json` | The clinical concept vocabulary |
 | `evaluation_schema.json` | JSON Schema for the output |
 | `main.py` | HTTP service (default port `8002`) |
 | `evaluate_results.py` | Batch scoring from the command line, no server |
+
+## Metrics
+
+Everything named in [`docs/metrics_summary.md`](../docs/metrics_summary.md),
+and where each one is computed.
+
+### Per report — returned by `POST /evaluate`
+
+| Metric | Status |
+|---|---|
+| WER | ✅ |
+| CER | ✅ |
+| chrF | ✅ |
+| Sub / Ins / Del counts | ✅ |
+| Hallucination ratio | ✅ output length over reference length |
+| Repetition score | ✅ the loop detector |
+| Punctuation F1 | ✅ computed on raw text, before normalisation |
+| Negation error rate | ✅ |
+| Laterality error rate | ✅ |
+| Number error rate | ✅ |
+| Unit error rate | ✅ |
+| Medical term precision / recall / F1 | ✅ |
+| Critical omission rate | ✅ |
+| Unsupported addition rate | ✅ |
+| `requires_medical_review` | ✅ with `review_reasons` |
+| Edit burden (post-edit WER) | ✅ the same number as WER, read as editing effort when the reference is a post-edit |
+
+### Per report, opt-in — `"include_semantic": true`
+
+| Metric | Status |
+|---|---|
+| BERTScore (ParsBERT) | ✅ optional |
+| Semantic similarity | ✅ optional |
+
+Off by default because they are the only metrics here that load a model.
+`GET /` reports whether the extras are installed; asking for them without the
+extras returns `503`, not a silent omission.
+
+```bash
+pip install -r requirements-semantic.txt
+```
+
+### Across a batch — `evaluate_results.py`
+
+These describe a distribution, so they only exist over many reports.
+
+| Metric | Status |
+|---|---|
+| SER | ✅ share of reports with any error |
+| WER P50 / P90 / P95 | ✅ |
+| % perfect | ✅ also the "accepted unchanged" rate in a post-edit workflow |
+| % catastrophic | ✅ threshold in `config.CATASTROPHIC_WER` |
+| Empty-output rate | ✅ |
+
+### Not implemented
+
+| Metric | Why |
+|---|---|
+| Script contamination | Not valid here. It assumes Latin characters are leakage, but this speaker mixes English terms in on purpose, so a correct transcript would score as heavily contaminated. |
+| Correction return rate | Needs stored history — how many transcripts ever come back corrected. This service keeps no state, so it cannot know. |
 
 ## Run
 
@@ -28,7 +90,7 @@ python main.py          # or: run.bat (Windows) / ./run.sh (Linux)
 ```
 
 Interactive docs at `/docs`. No model is loaded and no GPU is required —
-scoring is pure text processing.
+scoring is pure text processing unless the semantic extras are requested.
 
 ```bash
 curl -X POST http://localhost:8002/evaluate -H "Content-Type: application/json" -d '{
@@ -52,7 +114,8 @@ python evaluate_results.py manifest.json --out results/
 
 `manifest.json` is an array of pairs; `hypothesis` / `reference` may be inline
 text or the path to a `.txt` file. One result file is written per report per
-model, plus a `summary.json`.
+model, plus a `summary.json` holding the per-model totals and the distribution
+metrics above.
 
 Aggregate rates are computed from **summed counts**, never by averaging
 per-report rates — in a short report with a single negation, one error becomes a
@@ -84,15 +147,12 @@ stated with a negation or a side — no per-term clinical judgement needed.
 
 ## Known limitations
 
-**Fabrication outside the vocabulary is invisible.** `unsupported_additions`
-only counts concepts that exist in `clinical_terms.json`. In a real test, a
-model that invented a *"68-year-old male with COPD"* history scored
-`unsupported_additions = 0`, because COPD is chest vocabulary and this is an
-abdomen/pelvis list. The only signal was `wer = 0.97`.
-
-Practical consequence: log unrecognised terms during evaluation so the
-vocabulary grows from real traffic, and read `wer` / `insertions` as the
-complementary fabrication signal.
+**`unsupported_additions` only sees the vocabulary it knows.** It counts
+concepts present in `clinical_terms.json`, so a model that invented a
+*"68-year-old male with COPD"* history scored zero there — COPD is chest
+vocabulary and this is an abdomen/pelvis list. `hallucination_ratio` catches
+that case by length instead, which is why both are reported; log unrecognised
+terms during evaluation so the vocabulary grows from real traffic.
 
 **`clinical_terms.json` is currently a seed.** Around 40 concepts, built from
 observed dictations and scoped to abdominal / pelvic ultrasound. For real
@@ -112,4 +172,5 @@ python -m pytest tests/
 ```
 
 Negation, laterality, number and unit each have their own test file, as the task
-document asks. No model is loaded and no network request is made.
+document asks. Nothing loads a model or opens a socket; the semantic tests skip
+themselves when the optional extras are absent.

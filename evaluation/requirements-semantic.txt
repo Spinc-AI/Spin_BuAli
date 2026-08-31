@@ -1,0 +1,7 @@
+# Optional: the two embedding-based metrics (BERTScore, semantic similarity).
+# Not needed for anything else -- the rest of the service is pure text
+# processing. Installing these pulls in torch and downloads model weights on
+# first use.
+-r requirements.txt
+bert-score
+sentence-transformers

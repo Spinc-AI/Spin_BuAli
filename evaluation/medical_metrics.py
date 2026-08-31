@@ -10,8 +10,11 @@ that should have caught it reads zero.
 """
 from dataclasses import dataclass
 
+import config
+import general_metrics
+import semantic_metrics
 from extractors import ClinicalTerms, extract_measurements
-from text_normalizer import normalize, tokenize
+from text_normalizer import tokenize
 
 METRICS_VERSION = "1.0.0"
 
@@ -19,74 +22,6 @@ METRICS_VERSION = "1.0.0"
 # never "no kidney". Scoring anatomy for negation just measures how far the
 # cue window happened to reach.
 NEGATABLE_CATEGORIES = {"finding", "device"}
-
-
-# --- General metrics -------------------------------------------------------
-@dataclass(frozen=True)
-class EditCounts:
-    substitutions: int
-    insertions: int
-    deletions: int
-    reference_length: int
-
-    @property
-    def errors(self):
-        return self.substitutions + self.insertions + self.deletions
-
-    @property
-    def rate(self):
-        return self.errors / self.reference_length if self.reference_length else 0.0
-
-
-def edit_counts(reference, hypothesis):
-    """Levenshtein alignment, keeping the operation breakdown.
-
-    Insertions are tracked separately because in a medical transcript they are
-    the fabrication signal, not just noise.
-    """
-    rows, columns = len(reference), len(hypothesis)
-    distance = [[0] * (columns + 1) for _ in range(rows + 1)]
-    for row in range(rows + 1):
-        distance[row][0] = row
-    for column in range(columns + 1):
-        distance[0][column] = column
-    for row in range(1, rows + 1):
-        for column in range(1, columns + 1):
-            if reference[row - 1] == hypothesis[column - 1]:
-                distance[row][column] = distance[row - 1][column - 1]
-            else:
-                distance[row][column] = 1 + min(
-                    distance[row - 1][column - 1],  # substitution
-                    distance[row][column - 1],      # insertion
-                    distance[row - 1][column],      # deletion
-                )
-
-    substitutions = insertions = deletions = 0
-    row, column = rows, columns
-    while row > 0 or column > 0:
-        if row > 0 and column > 0 and reference[row - 1] == hypothesis[column - 1] \
-                and distance[row][column] == distance[row - 1][column - 1]:
-            row, column = row - 1, column - 1
-        elif row > 0 and column > 0 and distance[row][column] == distance[row - 1][column - 1] + 1:
-            substitutions += 1
-            row, column = row - 1, column - 1
-        elif column > 0 and distance[row][column] == distance[row][column - 1] + 1:
-            insertions += 1
-            column -= 1
-        else:
-            deletions += 1
-            row -= 1
-    return EditCounts(substitutions, insertions, deletions, rows)
-
-
-def word_error_rate(reference_text, hypothesis_text):
-    return edit_counts(tokenize(reference_text), tokenize(hypothesis_text))
-
-
-def character_error_rate(reference_text, hypothesis_text):
-    reference = normalize(reference_text).replace(" ", "")
-    hypothesis = normalize(hypothesis_text).replace(" ", "")
-    return edit_counts(list(reference), list(hypothesis))
 
 
 # --- Measurement alignment -------------------------------------------------
@@ -273,11 +208,12 @@ def _term_scores(true_positives, false_positives, false_negatives):
 
 
 # --- The report ------------------------------------------------------------
-def evaluate(hypothesis_text, reference_text, terms=None):
+def evaluate(hypothesis_text, reference_text, terms=None, include_semantic=False):
     """Score one report against its reference.
 
     `hypothesis_text` is what the pipeline produced; `reference_text` is the
-    radiologist-verified version.
+    radiologist-verified version. `include_semantic` adds the embedding
+    metrics, which load a model and are therefore opt-in.
     """
     terms = terms or ClinicalTerms()
 
@@ -295,10 +231,23 @@ def evaluate(hypothesis_text, reference_text, terms=None):
     false_negatives = len(concepts.only_reference)
     precision, recall, f1 = _term_scores(true_positives, false_positives, false_negatives)
 
-    wer = word_error_rate(reference_text, hypothesis_text)
-    cer = character_error_rate(reference_text, hypothesis_text)
+    wer = general_metrics.word_error_rate(reference_text, hypothesis_text)
+    cer = general_metrics.character_error_rate(reference_text, hypothesis_text)
 
-    reasons = [name for name, count in (
+    # A degenerate output needs a human look even when every clinical counter
+    # reads zero -- a model repeating one plausible sentence forever produces
+    # no negation, laterality or number error at all.
+    repetition = general_metrics.repetition_score(hypothesis_text)
+    length_ratio = general_metrics.hallucination_ratio(reference_text, hypothesis_text)
+    degenerate = [
+        name for name, tripped in (
+            ("repetition", repetition >= config.MAX_REPETITION),
+            ("length_ratio", length_ratio >= config.MAX_LENGTH_RATIO
+                             or (reference_text.strip() and length_ratio <= config.MIN_LENGTH_RATIO)),
+        ) if tripped
+    ]
+
+    reasons = degenerate + [name for name, count in (
         ("negation_errors", concepts.negation_errors),
         ("laterality_errors", concepts.laterality_errors),
         ("number_errors", measurements.number_errors),
@@ -307,7 +256,7 @@ def evaluate(hypothesis_text, reference_text, terms=None):
         ("unsupported_additions", unsupported_additions),
     ) if count]
 
-    return {
+    report = {
         "general": {
             "wer": round(wer.rate, 4),
             "cer": round(cer.rate, 4),
@@ -315,6 +264,12 @@ def evaluate(hypothesis_text, reference_text, terms=None):
             "insertions": wer.insertions,
             "deletions": wer.deletions,
             "reference_words": wer.reference_length,
+            "hypothesis_words": len(tokenize(hypothesis_text)),
+            "chrf": round(general_metrics.chrf(reference_text, hypothesis_text), 4),
+            "hallucination_ratio": round(length_ratio, 4),
+            "repetition_score": round(repetition, 4),
+            "punctuation_f1": round(
+                general_metrics.punctuation_f1(reference_text, hypothesis_text), 4),
         },
         "clinical_counts": {
             "reference_entities": len(concepts.reference),
@@ -358,6 +313,10 @@ def evaluate(hypothesis_text, reference_text, terms=None):
             "terms_sha": terms.sha,
         },
     }
+
+    if include_semantic:
+        report["semantic"] = semantic_metrics.compute(reference_text, hypothesis_text)
+    return report
 
 
 def _ratio(numerator, denominator):

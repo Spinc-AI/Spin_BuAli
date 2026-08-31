@@ -22,6 +22,7 @@ import json
 import pathlib
 import sys
 
+import config
 from extractors import ClinicalTerms
 from medical_metrics import METRICS_VERSION, evaluate
 
@@ -60,6 +61,38 @@ def score_manifest(manifest_path, terms):
     return results
 
 
+def _reliability(results):
+    """Distribution metrics -- the ones that only exist across many reports.
+
+    A mean WER hides the shape of the failures: a model can look acceptable on
+    average while collapsing completely on one report in twenty. These say how
+    often, and how badly.
+    """
+    wers = sorted(result["general"]["wer"] for result in results)
+    total = len(wers)
+    if not total:
+        return {}
+
+    def percentile(fraction):
+        return round(wers[min(int(fraction * total), total - 1)], 4)
+
+    perfect = sum(1 for wer in wers if wer == 0)
+    return {
+        # Share of reports with any error at all.
+        "ser": round(_ratio(total - perfect, total), 4),
+        "wer_p50": percentile(0.50),
+        "wer_p90": percentile(0.90),
+        "wer_p95": percentile(0.95),
+        # In a post-edit workflow this is also the "accepted unchanged" rate:
+        # a zero WER means the radiologist altered nothing.
+        "pct_perfect": round(_ratio(perfect, total), 4),
+        "pct_catastrophic": round(
+            _ratio(sum(1 for wer in wers if wer >= config.CATASTROPHIC_WER), total), 4),
+        "empty_output_rate": round(_ratio(
+            sum(1 for r in results if r["general"]["hypothesis_words"] == 0), total), 4),
+    }
+
+
 def summarize(results, terms):
     """Per-model totals, with rates recomputed from the summed counts."""
     by_model = {}
@@ -74,7 +107,9 @@ def summarize(results, terms):
         for field in COUNT_FIELDS:
             bucket[field] += result["clinical_counts"][field]
 
-    for bucket in by_model.values():
+    for model, bucket in by_model.items():
+        bucket["reliability"] = _reliability(
+            [r for r in results if r["model"] == model])
         measurements = bucket["reference_measurements"]
         produced = bucket["true_positive_terms"] + bucket["false_positive_terms"]
         expected = bucket["true_positive_terms"] + bucket["false_negative_terms"]
@@ -128,10 +163,13 @@ def main(argv=None):
     print(f"scored {len(results)} report(s) -> {out_dir}")
     for bucket in summary["models"]:
         rates = bucket["rates"]
+        reliability = bucket["reliability"]
         print(f"  {bucket['model']:28} reports={bucket['reports']:4} "
               f"F1={rates['medical_term_f1']:.3f} "
               f"num_err={rates['number_error_rate']:.3f} "
-              f"review={rates['review_rate']:.0%}")
+              f"review={rates['review_rate']:.0%} "
+              f"wer_p90={reliability['wer_p90']:.3f} "
+              f"catastrophic={reliability['pct_catastrophic']:.0%}")
     return 0
 
 

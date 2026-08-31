@@ -3,97 +3,285 @@
   "title": "Spin BuAli evaluation result",
   "description": "One report scored against a radiologist-verified reference. Counts are stored alongside rates so a batch can be re-aggregated correctly: sum the counts over a window, then divide. Averaging per-report rates turns one error in a short report into a 100% rate.",
   "type": "object",
-  "required": ["asset_id", "model", "general", "clinical_counts", "clinical_metrics",
-               "critical_errors", "requires_medical_review", "evaluation"],
+  "required": [
+    "asset_id",
+    "model",
+    "general",
+    "clinical_counts",
+    "clinical_metrics",
+    "critical_errors",
+    "requires_medical_review",
+    "evaluation"
+  ],
   "properties": {
-    "asset_id": {"type": "string", "description": "Stable id of the recording"},
-    "model": {"type": "string", "description": "Model that produced the transcript"},
-    "pipeline": {"type": ["string", "null"], "enum": ["separate", "multimodal", "hybrid", null]},
-    "model_version": {"type": ["string", "null"]},
-
+    "asset_id": {
+      "type": "string",
+      "description": "Stable id of the recording"
+    },
+    "model": {
+      "type": "string",
+      "description": "Model that produced the transcript"
+    },
+    "pipeline": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "separate",
+        "multimodal",
+        "hybrid",
+        null
+      ]
+    },
+    "model_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "general": {
       "type": "object",
-      "required": ["wer", "cer"],
+      "required": [
+        "wer",
+        "cer"
+      ],
       "properties": {
-        "wer": {"type": "number", "minimum": 0},
-        "cer": {"type": "number", "minimum": 0},
-        "substitutions": {"type": "integer", "minimum": 0},
-        "insertions": {"type": "integer", "minimum": 0,
-                       "description": "Words present in the output but not the reference"},
-        "deletions": {"type": "integer", "minimum": 0},
-        "reference_words": {"type": "integer", "minimum": 0}
+        "wer": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cer": {
+          "type": "number",
+          "minimum": 0
+        },
+        "substitutions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "insertions": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Words present in the output but not the reference"
+        },
+        "deletions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reference_words": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chrf": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "hypothesis_words": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hallucination_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Output length over reference length; above 1 means extra text appeared."
+        },
+        "repetition_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of repeated n-grams in the output; near 1 means the model looped."
+        },
+        "punctuation_f1": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
       }
     },
-
     "clinical_counts": {
       "type": "object",
       "description": "Raw counts. Aggregate these, not the rates.",
       "properties": {
-        "reference_entities": {"type": "integer", "minimum": 0},
-        "matched_entities": {"type": "integer", "minimum": 0},
-        "true_positive_terms": {"type": "integer", "minimum": 0},
-        "false_positive_terms": {"type": "integer", "minimum": 0},
-        "false_negative_terms": {"type": "integer", "minimum": 0},
-        "reference_measurements": {"type": "integer", "minimum": 0},
-        "negation_errors": {"type": "integer", "minimum": 0},
-        "laterality_errors": {"type": "integer", "minimum": 0},
-        "number_errors": {"type": "integer", "minimum": 0},
-        "unit_errors": {"type": "integer", "minimum": 0},
-        "critical_omissions": {"type": "integer", "minimum": 0},
-        "unsupported_additions": {"type": "integer", "minimum": 0}
+        "reference_entities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_entities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "true_positive_terms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "false_positive_terms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "false_negative_terms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reference_measurements": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "negation_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "laterality_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "number_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "critical_omissions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsupported_additions": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
-
     "clinical_metrics": {
       "type": "object",
       "description": "Rates for this single report. A rate is 0.0 when nothing was scorable.",
       "properties": {
-        "medical_term_precision": {"type": "number", "minimum": 0, "maximum": 1},
-        "medical_term_recall": {"type": "number", "minimum": 0, "maximum": 1},
-        "medical_term_f1": {"type": "number", "minimum": 0, "maximum": 1},
-        "negation_error_rate": {"type": "number", "minimum": 0, "maximum": 1},
-        "laterality_error_rate": {"type": "number", "minimum": 0, "maximum": 1},
-        "number_error_rate": {"type": "number", "minimum": 0},
-        "unit_error_rate": {"type": "number", "minimum": 0},
-        "critical_omission_rate": {"type": "number", "minimum": 0},
-        "unsupported_addition_rate": {"type": "number", "minimum": 0}
+        "medical_term_precision": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "medical_term_recall": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "medical_term_f1": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "negation_error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "laterality_error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "number_error_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unit_error_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "critical_omission_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unsupported_addition_rate": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
-
     "critical_errors": {
       "type": "array",
       "description": "Individual clinically significant differences, for the audit trail.",
       "items": {
         "type": "object",
-        "required": ["type", "concept"],
+        "required": [
+          "type",
+          "concept"
+        ],
         "properties": {
-          "type": {"type": "string",
-                   "enum": ["negation_flip", "laterality_flip",
-                            "measurement_mismatch", "measurement_omission"]},
-          "concept": {"type": "string"},
-          "reference": {"type": ["string", "null"]},
-          "prediction": {"type": ["string", "null"]}
+          "type": {
+            "type": "string",
+            "enum": [
+              "negation_flip",
+              "laterality_flip",
+              "measurement_mismatch",
+              "measurement_omission"
+            ]
+          },
+          "concept": {
+            "type": "string"
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prediction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     },
-
     "requires_medical_review": {
       "type": "boolean",
       "description": "True when any critical error was found. In a post-edit workflow this is raised after sign-off, so it is an audit trigger for a second look, not a safety gate."
     },
     "review_reasons": {
-      "type": "array", "items": {"type": "string"},
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
       "description": "Which counters triggered the review flag."
     },
-
     "evaluation": {
       "type": "object",
       "description": "Which ruler produced these numbers. Results are only comparable across reports scored with the same versions -- adding terms or fixing a comparator moves the values on its own.",
-      "required": ["metrics_version", "terms_version", "terms_sha"],
+      "required": [
+        "metrics_version",
+        "terms_version",
+        "terms_sha"
+      ],
       "properties": {
-        "metrics_version": {"type": "string"},
-        "terms_version": {"type": "string"},
-        "terms_sha": {"type": "string", "description": "Content hash of clinical_terms.json"}
+        "metrics_version": {
+          "type": "string"
+        },
+        "terms_version": {
+          "type": "string"
+        },
+        "terms_sha": {
+          "type": "string",
+          "description": "Content hash of clinical_terms.json"
+        }
+      }
+    },
+    "semantic": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Only present when the request set include_semantic. These load a model.",
+      "properties": {
+        "bertscore_f1": {
+          "type": "number"
+        },
+        "semantic_similarity": {
+          "type": "number"
+        }
       }
     }
   }

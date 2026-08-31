@@ -1,5 +1,6 @@
 """End-to-end scoring: term matching, general metrics, and the review flag."""
-from medical_metrics import METRICS_VERSION, character_error_rate, evaluate, word_error_rate
+from general_metrics import character_error_rate, word_error_rate
+from medical_metrics import METRICS_VERSION, evaluate
 
 
 class TestGeneralMetrics:

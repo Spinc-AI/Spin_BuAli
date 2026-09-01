@@ -1,0 +1,58 @@
+{
+  "audio": {
+    "target_sample_rate": 16000,
+    "target_channels": 1,
+    "target_subtype": "PCM_16",
+    "target_format": "WAV"
+  },
+  "validation": {
+    "min_duration_sec": 0.2,
+    "max_duration_sec": 14400,
+    "min_peak_amplitude": 0.0001,
+    "reject_non_finite": true
+  },
+  "vad": {
+    "enabled": true,
+    "backend": "silero",
+    "fallback": "energy",
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 100,
+    "speech_pad_ms": 300,
+    "energy": {
+      "frame_ms": 30,
+      "threshold_ratio": 0.08
+    }
+  },
+  "chunking": {
+    "source": "standardized",
+    "strategy": "adaptive",
+    "target_duration_sec": 25.0,
+    "min_duration_sec": 20.0,
+    "max_duration_sec": 30.0,
+    "overlap_sec": 1.5,
+    "adaptive": {
+      "frame_ms": 20,
+      "snap_window_sec": 2.0,
+      "max_extra_chunks": 2,
+      "extra_chunk_penalty": 0.02
+    }
+  },
+  "output": {
+    "root": "output",
+    "id_strategy": "sha256_16",
+    "standardized_name": "standardized.wav",
+    "chunks_dir": "chunks",
+    "chunk_name_format": "chunk_{index:03d}.wav",
+    "segments_name": "segments.json",
+    "report_name": "preprocessing_report.csv",
+    "overwrite": true
+  },
+  "policy": {
+    "preserve_original": true,
+    "denoise": false,
+    "gain_normalization": false,
+    "remove_silence": false,
+    "vad_replaces_original": false
+  }
+}

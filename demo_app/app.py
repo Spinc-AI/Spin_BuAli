@@ -10,6 +10,7 @@ The controller must be running (default localhost:9002).
 import json
 import threading
 import tkinter as tk
+import uuid
 from tkinter import filedialog, messagebox, ttk
 
 from api import BuAliClient, ControllerError
@@ -20,6 +21,11 @@ from config import (
     GEMINI_HINT,
     MAX_STT_SLOTS,
     PIPELINE_LABELS,
+    PREPROCESSING_VERSION = "legacy-v1"
+    PIPELINE_VERSION = "buali-v1"
+    PROMPT_VERSION = "radiology-v1"
+
+
 )
 from export import TranscriptSaver
 from widgets import ConnectionBar, CloudFields, ModeSelector, OutputBox, ScrollableFrame, SttSlotWidget
@@ -170,6 +176,77 @@ class App(tk.Tk):
         else:
             self.gemini_hint.grid_remove()
 
+
+
+    def _build_processing_config_and_credentials(self):
+    pipeline = self._pipeline_value()
+
+    stt_slots = []
+    stt_credentials = {}
+
+    if pipeline != "multimodal":
+        for index, widget in enumerate(self.slot_widgets):
+            if not widget.enabled.get():
+                stt_slots.append(None)
+                continue
+
+            slot_id = f"stt_{index + 1}"
+
+            slot_config = {
+                "slot_id": slot_id,
+                "model": widget.effective_model(),
+            }
+
+            stt_slots.append(slot_config)
+
+            if widget.is_cloud():
+                credential = {}
+
+                api_key = widget.cloud.api_key.get().strip()
+                base_url = widget.cloud.base_url.get().strip()
+
+                if api_key:
+                    credential["api_key"] = api_key
+
+                if base_url:
+                    credential["base_url"] = base_url
+
+                if credential:
+                    stt_credentials[slot_id] = credential
+
+    processing_config = {
+        "pipeline": pipeline,
+        "language": "fa",
+        "stt_slots": stt_slots,
+        "llm_model": self._effective_llm_model(),
+        "preprocessing_version": PREPROCESSING_VERSION,
+        "pipeline_version": PIPELINE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "dictionary_version": None,
+    }
+
+    execution_credentials = {
+        "stt": stt_credentials,
+    }
+
+    if self.llm_mode.is_cloud():
+        llm_credential = {}
+
+        api_key = self.llm_cloud.api_key.get().strip()
+        base_url = self.llm_cloud.base_url.get().strip()
+
+        if api_key:
+            llm_credential["api_key"] = api_key
+
+        if base_url:
+            llm_credential["base_url"] = base_url
+
+        if llm_credential:
+            execution_credentials["llm"] = llm_credential
+
+    return processing_config, execution_credentials
+
+
     # --- controller calls ---------------------------------------------------
     def check_connection(self):
         self.connection.show_checking()
@@ -194,53 +271,170 @@ class App(tk.Tk):
                           "BuAli", f"Could not fetch models: {detail}"))
 
     def start_session(self):
-        if not self.llm_model.strip(":"):
-            messagebox.showwarning(
-                "BuAli",
-                "No LLM model selected. Local models are listed from the controller — "
-                "check the connection and press Refresh, or switch to a cloud model.")
-            return
+    """Development-only local validation; no Session is created in AI."""
 
-        payload = {"pipeline": self.pipeline, "llm_model": self.llm_model}
-        if self.pipeline != "multimodal":
-            payload["stt_slots"] = [slot.as_slot_config() for slot in self.slots]
-        if self.llm_mode.is_cloud():
-            payload.update({f"llm_{key}": value
-                            for key, value in self.llm_cloud.credentials().items()})
+    try:
+        config_data, _ = self._build_processing_config_and_credentials()
 
-        self.session_status.config(text="starting session...")
-        self.in_background(
-            lambda: self.client.start_session(payload),
-            on_success=lambda body: self.session_status.config(
-                text=f"session: pipeline={body.get('pipeline')}, llm={body.get('llm_model')}"),
-            on_error=lambda detail: self.session_status.config(text=f"session failed: {detail}"),
+        pipeline = config_data["pipeline"]
+        configured_slots = [
+            slot
+            for slot in config_data["stt_slots"]
+            if slot is not None
+        ]
+
+        if pipeline in ("separate", "hybrid") and not configured_slots:
+            raise ValueError(
+                f"{pipeline} requires at least one STT slot"
+            )
+
+        self.session_status.config(
+            text=(
+                "settings ready: "
+                f"pipeline={pipeline}, "
+                f"llm={config_data['llm_model']}"
+            )
         )
 
+    except Exception as exc:
+        self.session_status.config(
+            text=f"invalid settings: {exc}"
+        )
+
+    
     def unload_session(self):
-        self.in_background(
-            self.client.unload_session,
-            on_success=lambda _: self.session_status.config(text="session: none"),
-            on_error=lambda detail: messagebox.showerror("BuAli", f"Unload failed: {detail}"),
+        """Clear only the local Demo status."""
+    
+        self.session_status.config(
+            text="settings: not validated"
         )
+
 
     def browse(self):
         path = filedialog.askopenfilename(title="Choose an audio file", filetypes=AUDIO_FILETYPES)
         if path:
             self.audio_path.set(path)
 
+
+    def _run_bg(
+        self,
+        path,
+        processing_config,
+        credentials,
+        token,
+    ):
+        job_id = f"dev-{uuid.uuid4().hex}"
+    
+        endpoint = (
+            f"{self.conn.base_url}"
+            f"/internal/jobs/{job_id}/execute"
+        )
+    
+        headers = {
+            "X-Internal-Token": token,
+        }
+    
+        data = {
+            "config_json": json.dumps(
+                processing_config,
+                ensure_ascii=False,
+            ),
+            "credentials_json": json.dumps(
+                credentials,
+                ensure_ascii=False,
+            ),
+        }
+    
+        try:
+            with open(path, "rb") as audio_file:
+                files = {
+                    "file": (
+                        os.path.basename(path),
+                        audio_file,
+                    )
+                }
+    
+                response = requests.post(
+                    endpoint,
+                    files=files,
+                    data=data,
+                    headers=headers,
+                    timeout=TIMEOUT_LOAD,
+                )
+    
+            response.raise_for_status()
+    
+            body = response.json()
+    
+            self._last_result = body.get(
+                "result",
+                {},
+            )
+    
+            pretty = json.dumps(
+                body,
+                indent=2,
+                ensure_ascii=False,
+            )
+    
+            self.after(
+                0,
+                self.output.write,
+                pretty,
+            )
+    
+        except requests.RequestException as exc:
+            self.after(
+                0,
+                self.output.write,
+                f"Error: {error_detail(exc)}",
+            )
+    
     def run(self):
-        path = self.audio_path.get()
+        path = self.file_path.get().strip()
+    
         if not path:
-            messagebox.showwarning("BuAli", "Choose or record an audio file first.")
+            messagebox.showwarning(
+                "BuAli",
+                "Choose or record an audio file first.",
+            )
             return
-        self._audio_path = path
-        self.saver.suggest_dir_from(path)
-
-        overrides = ({f"llm_{key}": value
-                      for key, value in self.llm_cloud.credentials().items()}
-                     if self.llm_mode.is_cloud() else {})
-
+    
+        token = self.conn.internal_token.get().strip()
+    
+        if not token:
+            messagebox.showwarning(
+                "BuAli",
+                "Enter the AI Controller internal token.",
+            )
+            return
+    
+        try:
+            processing_config, credentials = (
+                self._build_processing_config_and_credentials()
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "BuAli",
+                f"Invalid processing configuration: {exc}",
+            )
+            return
+    
+        self._last_audio_path = path
+        self.saver.note_audio_path(path)
+    
         self.output.write("running...")
+    
+        run_bg(
+            self._run_bg,
+            path,
+            processing_config,
+            credentials,
+            token,
+        )
+
+        
+    
 
         def show(body):
             self._report = body.get("result", {})

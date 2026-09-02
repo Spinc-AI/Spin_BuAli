@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AudioMetadataRecord",
+  "description": "Schema for one per-file JSON record produced by audio_metadata_extractor.py",
+  "type": "object",
+  "required": [
+    "audio_id",
+    "original_filename",
+    "sha256",
+    "file_size_bytes",
+    "decode_status",
+    "schema_version",
+    "processed_at"
+  ],
+  "properties": {
+    "audio_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "First 16 hex characters of the file's full SHA-256 digest. Used as the unique identifier and JSON filename."
+    },
+    "original_filename": {
+      "type": "string",
+      "description": "Original filename as found in the input folder (not modified)."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Full SHA-256 hash of the raw file bytes. Identical files (even renamed) share the same hash."
+    },
+    "format": {
+      "type": ["string", "null"],
+      "description": "Real container format detected from the file's bitstream via ffprobe (e.g. 'wav', 'mp3'), not just the file extension."
+    },
+    "codec": {
+      "type": ["string", "null"],
+      "description": "Audio codec used inside the container (e.g. 'pcm_s16le', 'mp3')."
+    },
+    "duration_seconds": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Duration of the audio stream in seconds."
+    },
+    "sample_rate": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Sample rate in Hz (e.g. 44100)."
+    },
+    "channels": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Number of audio channels (1 = mono, 2 = stereo, ...)."
+    },
+    "bit_depth": {
+      "type": ["integer", "null"],
+      "description": "Bits per sample for PCM-style formats. Null for codecs where bit depth is not meaningful (e.g. MP3)."
+    },
+    "bitrate": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Bitrate in bits per second, from the stream (or container if the stream value is unavailable)."
+    },
+    "file_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of the original file on disk, in bytes."
+    },
+    "peak_level": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Maximum absolute sample amplitude, normalized to [0, 1] (1.0 = full scale)."
+    },
+    "rms_level": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Root-mean-square amplitude of the decoded signal, normalized to [0, 1]."
+    },
+    "clipping_ratio": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Fraction of samples at or above the clipping threshold (>= 0.999 of full scale)."
+    },
+    "silence_ratio": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Approximate fraction of samples below the silence amplitude threshold (<= 0.01 of full scale)."
+    },
+    "decode_status": {
+      "type": "string",
+      "enum": ["ok", "error"],
+      "description": "'ok' if the file was successfully probed and decoded; 'error' if it is corrupted or unreadable."
+    },
+    "error_message": {
+      "type": ["string", "null"],
+      "description": "Human-readable error description when decode_status is 'error'; null otherwise."
+    },
+    "duplicate_of": {
+      "type": ["string", "null"],
+      "description": "original_filename of the first file that had the same SHA-256 hash, if this file is a byte-for-byte duplicate; null otherwise. (Note: audio_id itself cannot be used for this, since identical content always produces the identical audio_id.)"
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this schema the record conforms to."
+    },
+    "processed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp (ISO 8601) of when this record was generated."
+    }
+  },
+  "additionalProperties": false
+}

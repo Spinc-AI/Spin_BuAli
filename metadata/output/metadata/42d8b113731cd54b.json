@@ -1,0 +1,22 @@
+{
+  "audio_id": "42d8b113731cd54b",
+  "original_filename": "DPM89196.MP3",
+  "sha256": "42d8b113731cd54b3258a3b1772833f3230d44122aae8444b1db2688647f793c",
+  "file_size_bytes": 1089913,
+  "format": "mp3",
+  "codec": "mp3",
+  "duration_seconds": 45.156,
+  "sample_rate": 44100,
+  "channels": 2,
+  "bit_depth": null,
+  "bitrate": 192000,
+  "peak_level": 1.0,
+  "rms_level": 0.339428,
+  "clipping_ratio": 0.027513,
+  "silence_ratio": 0.120641,
+  "decode_status": "ok",
+  "error_message": null,
+  "duplicate_of": null,
+  "schema_version": "1.0",
+  "processed_at": "2026-08-31T04:18:28.600827+00:00"
+}

@@ -17,6 +17,13 @@ CHRF_BETA = 2.0  # recall weighted over precision, the sacreBLEU default
 # Punctuation compared by Punctuation F1, in both scripts.
 _PUNCTUATION = set(".,;:?!()-\"'«»،؛؟")
 
+# Every Unicode block Persian is written in: Arabic, Arabic Supplement, Arabic
+# Extended-A and -B, and the two presentation-form blocks.
+_ARABIC_RANGES = [
+    ("؀", "ۿ"), ("ݐ", "ݿ"), ("ࡰ", "࢟"),
+    ("ࢠ", "ࣿ"), ("ﭐ", "﷿"), ("ﹰ", "﻿"),
+]
+
 
 # --- Edit distance ---------------------------------------------------------
 @dataclass(frozen=True)
@@ -169,6 +176,30 @@ def punctuation_f1(reference_text, hypothesis_text):
 
 def _punctuation(text):
     return Counter(character for character in (text or "") if character in _PUNCTUATION)
+
+
+def script_contamination(text):
+    """Share of letters that are not Arabic-script.
+
+    Computed on raw text, like punctuation F1, since normalisation does not
+    remove Latin characters anyway.
+
+    **Read this one against the reference, never on its own.** It was designed
+    for corpora where any Latin character is leakage, and this one is not:
+    these radiologists dictate English terms on purpose, so a perfectly correct
+    transcript scores as heavily contaminated. What means something is the
+    hypothesis figure compared with the reference figure -- a model drifting
+    into Latin shows up as a gap between the two, not as a high number.
+    """
+    letters = [character for character in (text or "") if character.isalpha()]
+    if not letters:
+        return 0.0
+    foreign = sum(1 for character in letters if not _is_arabic_script(character))
+    return foreign / len(letters)
+
+
+def _is_arabic_script(character):
+    return any(low <= character <= high for low, high in _ARABIC_RANGES)
 
 
 def _ratio(numerator, denominator):

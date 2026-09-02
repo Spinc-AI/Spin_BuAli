@@ -33,9 +33,15 @@ class GeneralMetrics(BaseModel):
     deletions: int
     reference_words: int
     hypothesis_words: int
+    character_errors: int
+    reference_chars: int
     hallucination_ratio: float   # output length over reference length
     repetition_score: float      # share of repeated n-grams; the loop detector
     punctuation_f1: float
+    # Only meaningful as a pair: this corpus code-switches English terms on
+    # purpose, so the hypothesis figure is read against the reference figure.
+    script_contamination: float
+    reference_script_contamination: float
 
 
 class ClinicalCounts(BaseModel):
@@ -45,12 +51,20 @@ class ClinicalCounts(BaseModel):
     false_positive_terms: int
     false_negative_terms: int
     reference_measurements: int
+    hypothesis_measurements: int
     negation_errors: int
     laterality_errors: int
     number_errors: int
     unit_errors: int
     critical_omissions: int
     unsupported_additions: int
+    # Denominators. Present so each rate can be rebuilt over a batch of
+    # reports: summing rates is not the same as a rate over summed counts, and
+    # only the second is meaningful when reports vary in length.
+    negation_scored: int
+    laterality_scored: int
+    critical_omission_scored: int
+    unsupported_addition_scored: int
 
 
 class ClinicalMetrics(BaseModel):

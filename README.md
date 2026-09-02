@@ -32,12 +32,19 @@ into the system and one place where validation and credentials live.
 | [`core_llm/`](core_llm/README.md) | Language model, including the audio-capable path | `8001` |
 | [`evaluation/`](evaluation/README.md) | Scores a transcript against a verified reference | `8002` |
 | [`controller/`](controller/README.md) | BuAli's brain: the three pipelines, prompts, session | `9002` |
+| [`preprocessing/`](preprocessing/README.md) | Audio validation, standardization, VAD and chunking | — |
 | [`demo_app/`](demo_app/README.md) | Tkinter desktop client for manual testing | — |
+| [`benchmark/`](benchmark/README.md) | Ranks STT models over a batch of recordings | — |
 | [`docs/`](docs/README.md) | Roadmap and reference documents | — |
 
-Each folder is an independently deployable service: its own `requirements.txt`,
+Each service folder is independently deployable: its own `requirements.txt`,
 its own `config.py`, and no direct imports from any other module. Moving one to
 a different machine means changing a URL and nothing else.
+
+`benchmark/` is the one exception, and deliberately so. It is offline tooling
+rather than a service — no port, never in the request path — and comparing ten
+models over hundreds of recordings means loading weights in-process instead of
+over HTTP. That coupling is confined to a single file, `benchmark/bridge.py`.
 
 ## Quick start
 

@@ -28,10 +28,64 @@ from medical_metrics import METRICS_VERSION, evaluate
 
 COUNT_FIELDS = [
     "reference_entities", "matched_entities", "true_positive_terms",
-    "false_positive_terms", "false_negative_terms", "reference_measurements",
+    "false_positive_terms", "false_negative_terms",
+    "reference_measurements", "hypothesis_measurements",
     "negation_errors", "laterality_errors", "number_errors", "unit_errors",
     "critical_omissions", "unsupported_additions",
+    "negation_scored", "laterality_scored",
+    "critical_omission_scored", "unsupported_addition_scored",
 ]
+
+# Per-report text metrics that are scores rather than counts, so they aggregate
+# as a distribution rather than a sum. Which end of the distribution matters is
+# not the same for all of them: chrF and punctuation F1 describe typical
+# quality, while repetition and length ratio are failure detectors -- their mean
+# is near zero even when a model loops on one report in twenty, so the tail is
+# the number worth reading.
+TEXT_FIELDS = {
+    "cer": "mean",
+    "chrf": "mean",
+    "punctuation_f1": "mean",
+    "script_contamination": "mean",
+    "reference_script_contamination": "mean",
+    "repetition_score": "tail",
+    "hallucination_ratio": "tail",
+}
+
+# Edit counts summed across the batch, which is what a corpus WER is made of.
+EDIT_FIELDS = [
+    "substitutions", "insertions", "deletions",
+    "reference_words", "hypothesis_words",
+    "character_errors", "reference_chars",
+]
+
+
+def _corpus_rates(results):
+    """Corpus WER and CER: total edits over total reference length.
+
+    This is the headline number, and it is not the mean of the per-report WERs.
+    A mean weights a one-line report exactly like a full page, so a model that
+    fails on the short ones looks worse than it is -- and one that fails on the
+    long ones looks better. `wer_p50` and friends describe the spread around
+    this; they do not replace it.
+    """
+    totals = {field: 0 for field in EDIT_FIELDS}
+    for result in results:
+        for field in EDIT_FIELDS:
+            totals[field] += result["general"].get(field, 0)
+
+    word_errors = totals["substitutions"] + totals["insertions"] + totals["deletions"]
+    reference_words = totals["reference_words"]
+    return {
+        **totals,
+        "corpus_wer": round(_ratio(word_errors, reference_words), 4),
+        "corpus_cer": round(_ratio(totals["character_errors"], totals["reference_chars"]), 4),
+        # Which of the three the errors actually are. Insertions matter most in
+        # a medical transcript: they are the fabrication signal, not just noise.
+        "substitution_rate": round(_ratio(totals["substitutions"], reference_words), 4),
+        "insertion_rate": round(_ratio(totals["insertions"], reference_words), 4),
+        "deletion_rate": round(_ratio(totals["deletions"], reference_words), 4),
+    }
 
 
 def _read(value, base):
@@ -93,6 +147,26 @@ def _reliability(results):
     }
 
 
+def _text_distribution(results):
+    """Corpus-level view of the per-report text scores.
+
+    WER gets percentiles because it is the headline; these get the same
+    treatment for the same reason -- a model that is fine on average and
+    collapses on one report in twenty is not fine, and only the tail says so.
+    """
+    summary = {}
+    for field, emphasis in TEXT_FIELDS.items():
+        values = sorted(result["general"][field] for result in results
+                        if field in result["general"])
+        if not values:
+            continue
+        summary[f"{field}_mean"] = round(sum(values) / len(values), 4)
+        if emphasis == "tail":
+            summary[f"{field}_p95"] = round(values[min(int(0.95 * len(values)), len(values) - 1)], 4)
+            summary[f"{field}_max"] = round(values[-1], 4)
+    return summary
+
+
 def summarize(results, terms):
     """Per-model totals, with rates recomputed from the summed counts."""
     by_model = {}
@@ -108,19 +182,33 @@ def summarize(results, terms):
             bucket[field] += result["clinical_counts"][field]
 
     for model, bucket in by_model.items():
-        bucket["reliability"] = _reliability(
-            [r for r in results if r["model"] == model])
+        model_results = [r for r in results if r["model"] == model]
+        bucket["corpus"] = _corpus_rates(model_results)
+        bucket["reliability"] = _reliability(model_results)
+        bucket["text"] = _text_distribution(model_results)
         measurements = bucket["reference_measurements"]
         produced = bucket["true_positive_terms"] + bucket["false_positive_terms"]
         expected = bucket["true_positive_terms"] + bucket["false_negative_terms"]
         precision = _ratio(bucket["true_positive_terms"], produced)
         recall = _ratio(bucket["true_positive_terms"], expected)
+        # Every rate is errors over what there was to get wrong, summed across
+        # the batch -- never the mean of the per-report rates. One negation
+        # error in a two-sentence report is a 100% rate, and averaging that in
+        # would drown out a hundred correct ones.
         bucket["rates"] = {
             "medical_term_precision": round(precision, 4),
             "medical_term_recall": round(recall, 4),
             "medical_term_f1": round(_ratio(2 * precision * recall, precision + recall), 4),
+            "negation_error_rate": round(
+                _ratio(bucket["negation_errors"], bucket["negation_scored"]), 4),
+            "laterality_error_rate": round(
+                _ratio(bucket["laterality_errors"], bucket["laterality_scored"]), 4),
             "number_error_rate": round(_ratio(bucket["number_errors"], measurements), 4),
             "unit_error_rate": round(_ratio(bucket["unit_errors"], measurements), 4),
+            "critical_omission_rate": round(
+                _ratio(bucket["critical_omissions"], bucket["critical_omission_scored"]), 4),
+            "unsupported_addition_rate": round(
+                _ratio(bucket["unsupported_additions"], bucket["unsupported_addition_scored"]), 4),
             "review_rate": round(_ratio(bucket["requires_medical_review"], bucket["reports"]), 4),
         }
     return {
@@ -165,6 +253,7 @@ def main(argv=None):
         rates = bucket["rates"]
         reliability = bucket["reliability"]
         print(f"  {bucket['model']:28} reports={bucket['reports']:4} "
+              f"WER={bucket['corpus']['corpus_wer']:.3f} "
               f"F1={rates['medical_term_f1']:.3f} "
               f"num_err={rates['number_error_rate']:.3f} "
               f"review={rates['review_rate']:.0%} "

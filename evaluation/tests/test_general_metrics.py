@@ -6,6 +6,7 @@ from general_metrics import (
     hallucination_ratio,
     punctuation_f1,
     repetition_score,
+    script_contamination,
 )
 from medical_metrics import evaluate
 
@@ -83,6 +84,8 @@ class TestInTheReport:
     @pytest.mark.parametrize("field", [
         "chrf", "hallucination_ratio", "repetition_score",
         "punctuation_f1", "hypothesis_words",
+        "script_contamination", "reference_script_contamination",
+        "character_errors", "reference_chars",
     ])
     def test_new_fields_are_reported(self, terms, field):
         assert field in evaluate("a 6 mm stone", "a 6 mm stone", terms)["general"]
@@ -116,3 +119,46 @@ class TestDegenerateOutput:
         text = "There is a 6 mm stone in the distal right ureter."
         result = evaluate(text, text, terms)
         assert result["requires_medical_review"] is False
+
+
+class TestScriptContamination:
+    """Share of letters that are not Arabic-script.
+
+    Kept deliberately simple, and reported beside the reference's own figure,
+    because on this corpus the absolute number is not interpretable on its own.
+    """
+
+    def test_pure_persian_scores_zero(self):
+        assert script_contamination("کلیه راست طبیعی است") == 0.0
+
+    def test_pure_latin_scores_one(self):
+        assert script_contamination("the right kidney is normal") == 1.0
+
+    def test_mixed_text_scores_the_share(self):
+        assert script_contamination("کلیه normal") == pytest.approx(6 / 10, abs=0.01)
+
+    def test_digits_and_punctuation_are_not_letters(self):
+        """Only alphabetic characters count, so "۶ mm" is judged on "mm"."""
+        assert script_contamination("۶ mm، ۷") == 1.0
+        assert script_contamination("۶ ۷ ۸") == 0.0
+
+    def test_empty_text_scores_zero(self):
+        assert script_contamination("") == 0.0
+
+    def test_a_correct_code_switched_transcript_scores_high(self):
+        """The documented limitation, pinned as a test so it is never mistaken
+        for a bug: this radiologist dictates English terms on purpose, so a
+        perfect transcript is 'contaminated'."""
+        assert script_contamination("در sonography کلیه راست stone دیده شد") > 0.4
+
+    def test_the_reference_figure_is_reported_alongside(self, terms):
+        """Which is what makes the hypothesis figure readable -- a model
+        drifting into Latin is a gap between the two, not a high number."""
+        text = "در sonography کلیه راست stone دیده شد"
+        general = evaluate(text, text, terms)["general"]
+        assert general["script_contamination"] == general["reference_script_contamination"]
+
+    def test_a_model_answering_in_english_shows_as_a_gap(self):
+        reference = "کلیه راست طبیعی است"
+        assert (script_contamination("the right kidney is normal")
+                - script_contamination(reference)) == 1.0

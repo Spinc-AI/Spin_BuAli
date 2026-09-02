@@ -16,7 +16,10 @@ import semantic_metrics
 from extractors import ClinicalTerms, extract_measurements
 from text_normalizer import tokenize
 
-METRICS_VERSION = "1.0.0"
+# 1.1.0 added the denominators to clinical_counts; 1.2.0 added the character
+# counts and script contamination. Additive -- no metric value moved -- but
+# results carry the version so the difference is never guesswork.
+METRICS_VERSION = "1.2.0"
 
 # Negation applies to findings, not to body parts: a report says "no stone",
 # never "no kidney". Scoring anatomy for negation just measures how far the
@@ -226,6 +229,13 @@ def evaluate(hypothesis_text, reference_text, terms=None, include_semantic=False
     critical_omissions = len(measurements.missing) + len(dropped)
     unsupported_additions = len(measurements.extra) + len(concepts.only_hypothesis)
 
+    # How much there was to get wrong. Reported alongside the errors because a
+    # rate cannot be re-derived across a batch without it: summing rates is not
+    # the same as a rate over summed counts, and only the latter is meaningful
+    # when reports vary in length.
+    omission_scored = measurements.reference_count + len(dropped)
+    addition_scored = measurements.hypothesis_count + len(concepts.hypothesis)
+
     true_positives = len(concepts.matched)
     false_positives = len(concepts.only_hypothesis)
     false_negatives = len(concepts.only_reference)
@@ -265,11 +275,23 @@ def evaluate(hypothesis_text, reference_text, terms=None, include_semantic=False
             "deletions": wer.deletions,
             "reference_words": wer.reference_length,
             "hypothesis_words": len(tokenize(hypothesis_text)),
+            # Character-level counts, so a batch can report a corpus CER --
+            # total edits over total characters -- rather than a mean of
+            # per-report rates, which weights a one-line report like a page.
+            "character_errors": cer.errors,
+            "reference_chars": cer.reference_length,
             "chrf": round(general_metrics.chrf(reference_text, hypothesis_text), 4),
             "hallucination_ratio": round(length_ratio, 4),
             "repetition_score": round(repetition, 4),
             "punctuation_f1": round(
                 general_metrics.punctuation_f1(reference_text, hypothesis_text), 4),
+            # Reported as a pair on purpose. This corpus code-switches English
+            # radiology terms deliberately, so the hypothesis figure alone says
+            # nothing; the gap between the two is the part that does.
+            "script_contamination": round(
+                general_metrics.script_contamination(hypothesis_text), 4),
+            "reference_script_contamination": round(
+                general_metrics.script_contamination(reference_text), 4),
         },
         "clinical_counts": {
             "reference_entities": len(concepts.reference),
@@ -278,12 +300,18 @@ def evaluate(hypothesis_text, reference_text, terms=None, include_semantic=False
             "false_positive_terms": false_positives,
             "false_negative_terms": false_negatives,
             "reference_measurements": measurements.reference_count,
+            "hypothesis_measurements": measurements.hypothesis_count,
             "negation_errors": concepts.negation_errors,
             "laterality_errors": concepts.laterality_errors,
             "number_errors": measurements.number_errors,
             "unit_errors": measurements.unit_errors,
             "critical_omissions": critical_omissions,
             "unsupported_additions": unsupported_additions,
+            # Denominators, so every rate above can be rebuilt over a batch.
+            "negation_scored": concepts.negation_scored,
+            "laterality_scored": concepts.laterality_scored,
+            "critical_omission_scored": omission_scored,
+            "unsupported_addition_scored": addition_scored,
         },
         "clinical_metrics": {
             "medical_term_precision": round(precision, 4),
@@ -297,12 +325,8 @@ def evaluate(hypothesis_text, reference_text, terms=None, include_semantic=False
                 _ratio(measurements.number_errors, measurements.reference_count), 4),
             "unit_error_rate": round(
                 _ratio(measurements.unit_errors, measurements.reference_count), 4),
-            "critical_omission_rate": round(
-                _ratio(critical_omissions,
-                       measurements.reference_count + len(dropped)), 4),
-            "unsupported_addition_rate": round(
-                _ratio(unsupported_additions,
-                       measurements.hypothesis_count + len(concepts.hypothesis)), 4),
+            "critical_omission_rate": round(_ratio(critical_omissions, omission_scored), 4),
+            "unsupported_addition_rate": round(_ratio(unsupported_additions, addition_scored), 4),
         },
         "critical_errors": concepts.critical_errors + measurements.critical_errors,
         "requires_medical_review": bool(reasons),

@@ -28,6 +28,10 @@ env/
 stt/models/
 *.wav
 
+# --- benchmark/ run output (regenerated, sometimes large) ---
+benchmark/results/
+benchmark/.env
+
 # --- OS / editor cruft ---
 .DS_Store
 Thumbs.db

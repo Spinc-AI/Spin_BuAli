@@ -96,6 +96,24 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "character_errors": {
+          "type": "integer",
+          "description": "Character-level edits, so a batch can report a corpus CER",
+          "minimum": 0
+        },
+        "reference_chars": {
+          "type": "integer",
+          "description": "Characters in the reference, the corpus CER denominator",
+          "minimum": 0
+        },
+        "script_contamination": {
+          "type": "number",
+          "description": "Share of hypothesis letters that are not Arabic-script"
+        },
+        "reference_script_contamination": {
+          "type": "number",
+          "description": "The same for the reference, to read it against"
         }
       }
     },
@@ -150,6 +168,31 @@
         "unsupported_additions": {
           "type": "integer",
           "minimum": 0
+        },
+        "hypothesis_measurements": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Measurements found in the transcript"
+        },
+        "negation_scored": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Concepts whose negation was comparable (present in both texts)"
+        },
+        "laterality_scored": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Concepts the reference gave a side for"
+        },
+        "critical_omission_scored": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reference measurements plus negated/sided concepts -- what could have been omitted"
+        },
+        "unsupported_addition_scored": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Transcript measurements plus concepts -- what could have been added"
         }
       }
     },

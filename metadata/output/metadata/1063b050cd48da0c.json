@@ -1,0 +1,22 @@
+{
+  "audio_id": "1063b050cd48da0c",
+  "original_filename": "DPM89170.MP3",
+  "sha256": "1063b050cd48da0c49846da1bacdb3e060b67226faa4eec78f3f2977be532775",
+  "file_size_bytes": 405695,
+  "format": "mp3",
+  "codec": "mp3",
+  "duration_seconds": 16.646,
+  "sample_rate": 44100,
+  "channels": 2,
+  "bit_depth": null,
+  "bitrate": 192000,
+  "peak_level": 1.0,
+  "rms_level": 0.153365,
+  "clipping_ratio": 0.000215,
+  "silence_ratio": 0.137881,
+  "decode_status": "ok",
+  "error_message": null,
+  "duplicate_of": null,
+  "schema_version": "1.0",
+  "processed_at": "2026-08-31T04:18:27.275165+00:00"
+}

@@ -1,0 +1,18 @@
+python-dotenv>=1.0
+numpy
+soundfile
+
+# The benchmark loads stt's model classes in-process rather than over HTTP, so
+# it needs stt's inference stack. Install the CUDA build of torch for GPU runs
+# -- see https://pytorch.org. On Kaggle these are already present.
+torch
+torchaudio
+transformers
+sentencepiece
+protobuf
+
+# Notebook only: the leaderboard renders as a DataFrame when pandas is around,
+# and as markdown when it is not.
+# pandas
+
+# Scoring itself needs nothing further: evaluation/ is pure text processing.

@@ -3,7 +3,7 @@
 One entry point, `complete()`, sends a single-turn prompt (optionally with an
 audio attachment) to whichever provider the model name selects, and returns
 the raw reply text. Every call site here wants JSON back, so JSON mode is
-requested wherever the provider supports it; `extract_json()` parses the reply
+requested wherever the provider supports it; `prompts.extract_json()` parses the reply
 tolerantly for the providers that don't.
 """
 import base64
@@ -71,7 +71,7 @@ def complete(system_prompt: str, user_text: str | None, model: str,
 def _local(system_prompt: str, user_text: str | None, model: str,
            audio: bytes | None, audio_format: str | None) -> str:
     """This repo's core_llm/ service. It has no JSON mode -- the prompt asks
-    for JSON and extract_json() copes with whatever comes back."""
+    for JSON and prompts.extract_json() copes with whatever comes back."""
     with httpx.Client(timeout=config.HTTP_TIMEOUT) as c:
         if audio is None:
             response = _ok(
@@ -154,16 +154,3 @@ def _gemini(system_prompt: str, user_text: str | None, model: str,
 
 def _b64(audio: bytes) -> str:
     return base64.b64encode(audio).decode("ascii")
-
-
-def extract_json(reply: str) -> dict:
-    """Pull the JSON object out of an LLM reply, tolerating code fences and prose."""
-    text = reply.strip()
-    if "```" in text:
-        text = text.split("```", 2)[1]
-        if text.lstrip().lower().startswith("json"):
-            text = text.lstrip()[4:]
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("no JSON object found in the LLM reply")
-    return json.loads(text[start:end + 1])

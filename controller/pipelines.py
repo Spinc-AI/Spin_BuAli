@@ -99,7 +99,7 @@ def _complete(system_prompt: str, user_text: str | None, llm: LlmTarget,
     except Exception as exc:
         raise HTTPException(502, f"LLM call failed: {exc}")
     try:
-        return llm_client.extract_json(reply)
+        return prompts.extract_json(reply)
     except ValueError:
         raise HTTPException(502, f"LLM did not return valid JSON:\n{reply}")
 

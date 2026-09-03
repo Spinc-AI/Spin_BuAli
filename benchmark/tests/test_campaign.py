@@ -9,6 +9,7 @@ import json
 import pytest
 
 import ledger as ledger_module
+import llm as llm_module
 import plan as plan_module
 import session
 import tiers
@@ -174,6 +175,7 @@ class TestWorkingThrough:
     def test_a_session_writes_a_csv_per_run(self, tone, tmp_path, factory):
         runs = self._plan()
         session.work_through(runs, self._items(tone), tmp_path, model_factory=factory,
+                             llm_factory=llm_module.dry_run_factory,
                              devices=["cpu"])
         written = {p.stem for p in (tmp_path / "runs").glob("*.csv")}
         assert written == {run["run_id"] for run in runs if run["tier"] != "C"}
@@ -183,9 +185,11 @@ class TestWorkingThrough:
         runs, items = self._plan(), self._items(tone)
         first = session.work_through(runs, items, tmp_path, devices=["cpu"],
                                      budget=ledger_module.Budget(max_runs=1),
-                                     model_factory=factory)
+                                     model_factory=factory,
+                                     llm_factory=llm_module.dry_run_factory)
         second = session.work_through(runs, items, tmp_path, devices=["cpu"],
-                                      model_factory=factory)
+                                      model_factory=factory,
+                                      llm_factory=llm_module.dry_run_factory)
         assert len(first["performed"]) == 1
         done = {outcome["run_id"] for outcome in first["performed"] + second["performed"]}
         assert len(done) == len(first["performed"]) + len(second["performed"])
@@ -196,7 +200,8 @@ class TestWorkingThrough:
                                  CARD, 2, pipelines=("separate",),
                                  preprocessing=("adaptive",))
         report = session.work_through(runs, self._items(tone), tmp_path, tier="A",
-                                      devices=["cpu"], model_factory=factory)
+                                      devices=["cpu"], model_factory=factory,
+                                      llm_factory=llm_module.dry_run_factory)
         assert report["status"]["by_tier"]["A"]["pending"] == 0
         assert report["status"]["by_tier"]["B"]["pending"] > 0, "tier B left alone"
 
@@ -204,13 +209,15 @@ class TestWorkingThrough:
         """A row has to say which run produced it once the CSVs are combined."""
         runs = self._plan()
         session.work_through(runs, self._items(tone), tmp_path, model_factory=factory,
+                             llm_factory=llm_module.dry_run_factory,
                              devices=["cpu"])
         rows = ledger_module.Ledger(tmp_path).all_rows()
         assert all(row["run_id"] and row["tier"] and row["preprocessing"] for row in rows)
 
     def test_combining_rebuilds_the_leaderboard_from_the_files(self, tone, tmp_path, factory):
         session.work_through(self._plan(), self._items(tone), tmp_path,
-                             model_factory=factory, devices=["cpu"])
+                             model_factory=factory, devices=["cpu"],
+                             llm_factory=llm_module.dry_run_factory)
         result = session.combine(tmp_path)
         assert result["runs"] > 0
         assert (tmp_path / "leaderboard.csv").is_file()

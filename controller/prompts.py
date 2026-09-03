@@ -73,3 +73,26 @@ def with_template(prompt: str) -> str:
     """Append the JSON template the model is asked to fill in."""
     return (prompt + "\n\nJSON template to fill:\n"
             + json.dumps(REPORT_TEMPLATE, ensure_ascii=False, indent=2))
+
+
+def extract_json(reply: str) -> dict:
+    """Pull the report object back out of an LLM reply.
+
+    Lives here rather than with the HTTP client because it is the other half of
+    `with_template`: this module decides the shape the model is asked to fill,
+    so it decides how that shape is read back. It also means anything that only
+    needs the prompt contract -- the benchmark, for one -- can have it without
+    dragging in httpx and a provider configuration.
+
+    Tolerant of code fences and of a model that explains itself before
+    answering, because they all do.
+    """
+    text = reply.strip()
+    if "```" in text:
+        text = text.split("```", 2)[1]
+        if text.lstrip().lower().startswith("json"):
+            text = text.lstrip()[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("no JSON object found in the LLM reply")
+    return json.loads(text[start:end + 1])

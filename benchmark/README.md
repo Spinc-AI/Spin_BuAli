@@ -14,18 +14,29 @@ port, and is never in the request path.
 ## What it does
 
 ```
-recordings ──▶ decode ──▶ 28s windows ──▶ model ──▶ stitch ──▶ transcript
-                                            │                      │
-                                    speed / VRAM              evaluation/
-                                            │                      │
-                                            └──────▶ leaderboard ◀─┘
+recordings ─▶ 28s windows ─▶ STT ─▶ stitch ─▶ transcripts ─▶ LLM ─▶ report
+                                                 │                    │
+                                              cached            evaluation/
+                                                                      │
+                                                        leaderboard ◀─┘
 ```
 
 1. **Pair** each recording with its ground truth (or note that it has none yet).
 2. **Window** long audio into overlapping 28-second slices.
 3. **Transcribe** with one model at a time, replicated across every GPU.
-4. **Score** each transcript by calling `evaluation/`.
-5. **Rank** the models, and list the recordings that went worst.
+4. **Generate the report** with an LLM, using `controller/prompts.py` unchanged.
+5. **Score the report** by calling `evaluation/`.
+6. **Rank**, and list the recordings that went worst.
+
+**The report is what gets scored, not the transcript.** The labels are signed
+radiology reports, so grading a raw transcript against one would measure a
+translation, not a mistake. Step 4 is what makes this a benchmark of the
+product rather than of one component.
+
+**Step 3 is cached** on `(preprocessing, engines)` alone. Trying five prompts
+or three language models costs five or three LLM passes and no speech
+recognition at all — which is the difference between a Kaggle session and a
+fortnight of them.
 
 ## Why it looks like this
 
@@ -57,6 +68,8 @@ the model that crashed.
 | `transcribe.py` | Windowing, stitching, per-GPU scheduling, speed and VRAM |
 | `scoring.py` | Call `evaluation/` and join the scores to the speed figures |
 | `leaderboard.py` | Rank the models; write `summary.json`, `results.json`, `transcripts.json` |
+| `pipeline.py` | Transcripts → report, using the controller's prompts |
+| `llm.py` | Load a language model at its tier's precision; cloud models too |
 | `tiers.py` | What this hardware can hold, and at what precision |
 | `plan.py` | The run matrix: every configuration, tiered and ordered |
 | `ledger.py` | What is already done, atomic writes, the session budget |
@@ -78,7 +91,13 @@ Kaggle runtime). That coupling is real, so it lives in one file. Delete
 
 `settings.py` is called that, and not `config.py`, because `bridge.py` puts
 `evaluation/` on `sys.path` and `evaluation/config.py` would otherwise win the
-name.
+name. The same collision is why `llm.py` imports the controller's provider
+client behind a path swap rather than at module level — `controller/config.py`
+is the third file competing for that name.
+
+`bridge.py` also imports `controller/prompts.py`. **The prompt is the
+experiment**: a benchmark that phrased the instruction its own way would rank a
+system nobody ships, and nothing in the results would show it.
 
 ## Run
 

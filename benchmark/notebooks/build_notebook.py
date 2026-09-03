@@ -33,6 +33,8 @@ SOURCES = [
     ("evaluation/medical_metrics.py", "evaluation/medical_metrics.py", "evaluation"),
     ("evaluation/evaluate_results.py", "evaluation/evaluate_results.py", "evaluation"),
     ("evaluation/clinical_terms.json", "evaluation/clinical_terms.json", "evaluation"),
+    ("controller/prompts.py", "controller/prompts.py", "controller"),
+    ("controller/report_template.json", "controller/report_template.json", "controller"),
     ("stt/app/config.py", "stt/app/config.py", "stt"),
     ("stt/app/model.py", "stt/app/model.py", "stt"),
     ("benchmark/settings.py", "benchmark/settings.py", "benchmark"),
@@ -41,6 +43,8 @@ SOURCES = [
     ("benchmark/transcribe.py", "benchmark/transcribe.py", "benchmark"),
     ("benchmark/scoring.py", "benchmark/scoring.py", "benchmark"),
     ("benchmark/leaderboard.py", "benchmark/leaderboard.py", "benchmark"),
+    ("benchmark/llm.py", "benchmark/llm.py", "benchmark"),
+    ("benchmark/pipeline.py", "benchmark/pipeline.py", "benchmark"),
     ("benchmark/tiers.py", "benchmark/tiers.py", "benchmark"),
     ("benchmark/ledger.py", "benchmark/ledger.py", "benchmark"),
     ("benchmark/plan.py", "benchmark/plan.py", "benchmark"),
@@ -56,6 +60,11 @@ Straight from `evaluation/` — the same functions the live scoring service runs
 Not a reimplementation: if a metric changes there, this notebook changes with
 it, so the benchmark can never quietly disagree with production about which
 model is better.""",
+    "controller": """### The prompts
+
+From `controller/prompts.py`, unchanged. The prompt *is* the experiment — a
+benchmark that phrased the instruction its own way would be ranking a system
+nobody ships, and the difference would not show up anywhere in the results.""",
     "stt": """### The models
 
 From `stt/app/` — one class per architecture, and a registry naming every

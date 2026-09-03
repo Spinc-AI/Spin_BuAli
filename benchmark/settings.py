@@ -64,6 +64,13 @@ OUT_DIR = _default_out_dir()
 # of the repo that has been rearranged (a Kaggle dataset mount, say).
 EVALUATION_DIR = pathlib.Path(os.getenv("EVALUATION_DIR", str(REPO_ROOT / "evaluation")))
 STT_DIR = pathlib.Path(os.getenv("STT_DIR", str(REPO_ROOT / "stt")))
+CONTROLLER_DIR = pathlib.Path(os.getenv("CONTROLLER_DIR", str(REPO_ROOT / "controller")))
+
+# --- The LLM stage ---
+# How much the model may write. A radiology report plus the JSON wrapper fits
+# well inside this; the cap exists so a looping model ends rather than filling
+# the session.
+LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "1536"))
 
 # Optional: score through a running evaluation service instead of in-process.
 EVALUATION_URL = os.getenv("EVALUATION_URL") or None

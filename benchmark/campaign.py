@@ -10,6 +10,7 @@ import pathlib
 import bridge
 import dataset
 import ledger as ledger_module
+import llm as llm_module
 import plan as plan_module
 import session
 import settings
@@ -142,6 +143,7 @@ def command_work(args) -> int:
     report = session.work_through(
         runs, items, args.out, budget=budget, tier=args.tier, devices=devices,
         model_factory=transcribe.dry_run_factory if args.dry_run else None,
+        llm_factory=llm_module.dry_run_factory if args.dry_run else None,
         on_run=announce, window_sec=args.window_sec, overlap_sec=args.overlap_sec)
 
     print(f"\n{len(report['performed'])} run(s) this session, "

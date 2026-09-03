@@ -158,3 +158,67 @@ def _mean_semantic(results):
         return {}
     return {f"{field}_mean": round(sum(s[field] for s in scored) / len(scored), 4)
             for field in ("bertscore_f1", "semantic_similarity")}
+
+
+def score_reports(reports, items, terms=None, run=None, include_semantic=False):
+    """Score generated reports against the signed references.
+
+    The counterpart of `score_all`, which scores raw transcripts. This is the
+    one that matters now: the labels are signed radiology reports, so the thing
+    being graded is the report a pipeline produced, not what an STT engine
+    heard on the way.
+
+    A report the model failed to produce is scored as empty rather than
+    dropped, for the same reason a failed transcription is: dropping it would
+    flatter the configuration that broke.
+    """
+    terms = terms or bridge.ClinicalTerms()
+    run = run or {}
+    references = {item.asset_id: item.reference for item in items if item.labelled}
+    seconds = {item.asset_id: 0.0 for item in items}
+    audio_seconds = {item.asset_id: 0.0 for item in items}
+
+    label = run.get("llm_model") or "pipeline"
+    results = []
+    for report in reports:
+        reference = references.get(report.asset_id)
+        if reference is None:
+            continue  # unlabelled: produced and timed, but nothing to score against
+        results.append({
+            "asset_id": report.asset_id,
+            "model": label,
+            "model_version": run.get("precision", ""),
+            "pipeline": run.get("pipeline", ""),
+            "transcription_error": report.error,
+            "real_time_factor": 0.0,
+            "audio_seconds": audio_seconds.get(report.asset_id, 0.0),
+            "llm_seconds": round(report.elapsed_seconds, 2),
+            "reference": reference,
+            "hypothesis": report.final_text,
+            **bridge.evaluate(report.final_text, reference, terms),
+        })
+
+    if include_semantic:
+        attach_semantic(results)
+
+    summary = bridge.summarize(results, terms) if results else {
+        "models": [], "reports": 0,
+        "evaluation": {"metrics_version": bridge.METRICS_VERSION,
+                       "terms_version": terms.version, "terms_sha": terms.sha},
+    }
+    for bucket in summary["models"]:
+        model_results = [r for r in results if r["model"] == bucket["model"]]
+        bucket["by_duration"] = duration_buckets(model_results)
+        bucket["speed"] = {
+            "model": bucket["model"],
+            "llm_seconds_total": round(sum(r["llm_seconds"] for r in model_results), 1),
+            "failed": sum(1 for r in model_results if r["transcription_error"]),
+        }
+        if include_semantic:
+            bucket["semantic"] = _mean_semantic(model_results)
+
+    summary["labelled"] = sum(1 for item in items if item.labelled)
+    summary["unlabelled"] = sum(1 for item in items if not item.labelled)
+    summary["unscored_models"] = []
+    _ = seconds
+    return results, summary

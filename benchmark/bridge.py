@@ -15,6 +15,11 @@ Two rules keep it from spreading:
 * `stt/` is imported for its model classes only. Adding a model to
   `stt/app/config.py` is enough to make it benchmarkable; nothing here lists
   models by name.
+* `controller/` is imported for its **prompts**, and for nothing else. The
+  prompt is the experiment: a benchmark that used its own wording would be
+  measuring a system nobody ships. Those strings are tuned and the file that
+  holds them says the duplication in it is deliberate -- so they are read, not
+  copied.
 """
 import sys
 
@@ -44,11 +49,25 @@ from medical_metrics import METRICS_VERSION, evaluate  # noqa: E402
 from semantic_metrics import available as semantic_available  # noqa: E402
 from semantic_metrics import compute_batch as semantic_batch  # noqa: E402
 
+# --- controller ------------------------------------------------------------
+# Prompts only. Eager, and text-only, so it costs nothing and fails loudly if
+# the controller moves.
+_ensure_on_path(settings.CONTROLLER_DIR)
+
+from prompts import (  # noqa: E402
+    RECONCILE,
+    TRANSCRIBE_FROM_AUDIO,
+    extract_json,
+    with_template,
+)
+
 __all__ = [
     "ClinicalTerms", "METRICS_VERSION", "evaluate", "summarize",
     "semantic_available", "semantic_batch",
+    "RECONCILE", "TRANSCRIBE_FROM_AUDIO", "with_template", "extract_json",
     "model_registry", "build_stt_model", "torch_or_none",
 ]
+
 
 
 # --- stt -------------------------------------------------------------------

@@ -216,16 +216,28 @@ def _already_done(output_dir, config, path, identifier):
 
 
 def process_all(paths, output_root, config, metadata=None, stages=None, stop_on_error=False):
-    '''Process every input path, collecting one row per file for the report.'''
+    '''Process every input path, collecting one row per file for the report.
+
+    Duplicates are found by content while this runs. Two files with the same
+    SHA-256 are the same recording however they are named, and they already
+    share an output directory because ``file_id`` is derived from the digest --
+    so the second one is recorded as a duplicate of the first and its work is
+    not repeated. Renaming a file cannot hide it from this; matching on
+    filenames would miss exactly the case that matters.
+    '''
     stages = stages if stages is not None else select_stages()
     names = [stage.NAME for stage in stages]
     metadata = metadata or {}
 
     rows, results = [], []
+    seen = {}  # sha256 -> the filename it was first seen under
     for path in paths:
         entry = metadata if _is_flat(metadata) else metadata.get(os.path.basename(path), {})
         try:
             result = process_file(path, output_root, config, entry, stages)
+            digest = result["source"]["sha256"]
+            result["duplicate_of"] = seen.get(digest)
+            seen.setdefault(digest, result["source"]["filename"])
             results.append(result)
             rows.append(report_stage.row(result))
             log.info("%s -> %s", os.path.basename(path), _summary(result))

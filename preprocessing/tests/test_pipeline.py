@@ -224,3 +224,37 @@ def test_cli_reports_failure_with_a_nonzero_exit(tmp_path):
     bad = tmp_path / "bad.wav"
     bad.write_bytes(b"nope")
     assert ap.main([str(bad), "-o", str(tmp_path / "out")]) == 1
+
+
+class TestDuplicateDetection:
+    """Found by content, not by name — which is the case that matters, since
+    renaming a file is exactly how a duplicate gets past a filename check."""
+
+    def test_the_same_audio_under_two_names_is_linked(self, tmp_path, config):
+        source = tmp_path / "in"
+        source.mkdir()
+        audio = speech_like(2.0, 16000)
+        write_source(source / "original.wav", audio, 16000)
+        write_source(source / "renamed_copy.wav", audio, 16000)
+
+        results, rows = ap.process_all(sorted(source.iterdir()), tmp_path / "out", config)
+        duplicates = [r.get("duplicate_of") for r in results]
+        assert duplicates.count(None) == 1, "exactly one is the original"
+        assert any(d for d in duplicates), "the other names it"
+
+    def test_different_audio_is_not_flagged(self, tmp_path, config):
+        source = tmp_path / "in"
+        source.mkdir()
+        write_source(source / "one.wav", speech_like(2.0, 16000), 16000)
+        write_source(source / "two.wav", speech_like(3.0, 16000), 16000)
+
+        results, _ = ap.process_all(sorted(source.iterdir()), tmp_path / "out", config)
+        assert all(r.get("duplicate_of") is None for r in results)
+
+    def test_the_report_carries_the_quality_columns(self, tmp_path, config):
+        source = tmp_path / "in"
+        source.mkdir()
+        write_source(source / "one.wav", speech_like(2.0, 16000), 16000)
+
+        _, rows = ap.process_all(sorted(source.iterdir()), tmp_path / "out", config)
+        assert {"clipping_ratio", "silence_ratio", "duplicate_of"} <= set(rows[0])

@@ -15,7 +15,8 @@ REQUIRES = ()
 REPORT_COLUMNS = [
     "file_id", "source_path", "status", "error", "stages",
     "source_format", "source_subtype", "source_sample_rate", "source_channels",
-    "source_duration_sec", "peak", "rms",
+    "source_duration_sec", "peak", "rms", "clipping_ratio", "silence_ratio",
+    "duplicate_of",
     "standardized_duration_sec", "sample_rate", "channels", "subtype",
     "resampler", "clipped_samples",
     "vad_backend", "vad_segments", "speech_sec", "speech_ratio",
@@ -36,6 +37,7 @@ def row(result, status="ok", error=""):
             "error": error,
             "stages": " ".join(result.get("stages_run", [])),
             "checks_passed": result.get("checks", {}).get("passed", ""),
+            "duplicate_of": result.get("duplicate_of") or "",
             "processed_at": result.get("created_at", _now()),
         }
     )
@@ -49,6 +51,8 @@ def row(result, status="ok", error=""):
         ("source_duration_sec", "duration_sec"),
         ("peak", "peak"),
         ("rms", "rms"),
+        ("clipping_ratio", "clipping_ratio"),
+        ("silence_ratio", "silence_ratio"),
     ):
         entry[column] = source.get(key, "")
 

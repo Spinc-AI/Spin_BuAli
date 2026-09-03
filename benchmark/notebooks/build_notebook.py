@@ -129,25 +129,83 @@ recording: `asset_id`, `audio`, `image`, `report`. The `report` column is the
 signed radiology report — that is the answer key.
 """)
 
-code("""
+code('''
 # ════════════════════════════════════════════════════════════════
 #  LOCATE AND LOAD
 # ════════════════════════════════════════════════════════════════
-def find_labels():
-    \"\"\"The dataset's labels.csv, wherever Kaggle mounted it.\"\"\"
-    for root in (Path("/kaggle/input"), Path.cwd()):
+# Searched at any depth, because how deep the labels sit depends on how the
+# dataset was zipped: a top-level folder inside the archive adds a level, and
+# Kaggle keeps whatever was in there.
+SEARCH_ROOTS = [Path("/kaggle/input"), Path("/kaggle/working"), Path.cwd()]
+
+# Set this if the search picks the wrong one, or you have several datasets.
+LABELS_OVERRIDE = None    # e.g. "/kaggle/input/spin-buali-dataset/Small_Demo/labels.csv"
+
+
+def find_labels(name="labels.csv", roots=None):
+    """Every labels.csv under the search roots, shallowest first.
+
+    Shallowest first because a dataset that also ships an example or a backup
+    copy will have the real one nearest the top.
+    """
+    found = []
+    for root in (roots or SEARCH_ROOTS):
         if not root.exists():
             continue
-        for found in sorted(root.glob("*/*/labels.csv")) + sorted(root.glob("*/labels.csv")):
-            return found
-    raise SystemExit("no labels.csv found — attach the dataset with Add Input")
+        for path in root.rglob("*"):
+            if path.is_file() and path.name.lower() == name.lower():
+                found.append(path)
+    return sorted(set(found), key=lambda p: (len(p.parts), str(p)))
 
 
-LABELS = find_labels()
+def show_what_is_there(root=Path("/kaggle/input"), max_depth=3, max_lines=60):
+    """Print the mounted tree, so a failure says what IS there rather than
+    leaving you to guess at the path."""
+    if not root.exists():
+        print(f"  {root} does not exist — is this running on Kaggle?")
+        return
+    base, shown = len(root.parts), 0
+    for path in sorted(root.rglob("*")):
+        depth = len(path.parts) - base
+        if depth > max_depth:
+            continue
+        if shown >= max_lines:
+            print("  ...")
+            break
+        print(f"  {'  ' * (depth - 1)}{path.name}{'/' if path.is_dir() else ''}")
+        shown += 1
+
+
+if LABELS_OVERRIDE:
+    LABELS = Path(LABELS_OVERRIDE)
+    assert LABELS.is_file(), f"LABELS_OVERRIDE does not exist: {LABELS}"
+else:
+    candidates = find_labels()
+    if not candidates:
+        print("No labels.csv found. This is what is actually mounted:\\n")
+        show_what_is_there()
+        print("\\nAttach the dataset with Add Input, or set LABELS_OVERRIDE above")
+        print("to the full path of the labels.csv you can see in the tree.")
+        raise SystemExit("dataset not found")
+    if len(candidates) > 1:
+        print(f"{len(candidates)} labels.csv found — using the first:")
+        for c in candidates:
+            print(f"   {c}")
+        print()
+    LABELS = candidates[0]
+
+DATA_DIR = LABELS.parent
 labels = pd.read_csv(LABELS)
-print(f"{LABELS.parent}  —  {len(labels)} recording(s)")
+
+print(f"labels : {LABELS}")
+print(f"folder : {DATA_DIR}")
+# A set, because a case-insensitive filesystem matches both patterns with the
+# same files and would report double.
+_audio = {p.resolve() for pattern in ("*.mp3", "*.MP3") for p in DATA_DIR.glob(pattern)}
+print(f"audio  : {len(_audio)} mp3 file(s)")
+print(f"rows   : {len(labels)}")
 labels[["asset_id", "audio", "report"]].head()
-""")
+''')
 
 code("""
 # ════════════════════════════════════════════════════════════════
@@ -168,7 +226,7 @@ def load_audio(path, target_sr=TARGET_SR):
 
 clips = []
 for _, row in labels.iterrows():
-    audio, sr = load_audio(LABELS.parent / row["audio"])
+    audio, sr = load_audio(DATA_DIR / row["audio"])
     clips.append({
         "asset_id": row["asset_id"],
         "audio": audio,

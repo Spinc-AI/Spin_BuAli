@@ -202,7 +202,7 @@ for source_path, destination, section in SOURCES:
     embed(source_path, destination)
 
 code("""
-import bridge, dataset, leaderboard, run_benchmark, scoring, transcribe
+import bridge, dataset, leaderboard, ledger, llm, scoring, session, transcribe
 
 print("modules loaded")
 print("metrics version:", bridge.METRICS_VERSION)
@@ -212,237 +212,271 @@ for key, spec in bridge.model_registry().items():
 """)
 
 md("""
-## 3. Configure the run
+## 3. Point at the dataset
 
-`AUDIO_DIR` holds the recordings. `TRUTH_DIR` holds `<same stem>.txt` ground
-truth files — leave it `None` for a first pass over unlabelled audio, which
-still produces transcripts and timings.
+The dataset is its own Kaggle Dataset — attach it with **Add Input**, and it
+mounts read-only under `/kaggle/input/`. The cell below finds it by looking for
+a `labels.csv`, so the slug does not have to match.
 
-`MODELS` are keys from the registry printed above.
+Its layout, one folder per dataset:
+
+```
+Small_Demo/
+├── DPM89130.MP3 ...     the dictations
+└── labels.csv           asset_id, audio, image, report
+```
 """)
 
 code("""
-AUDIO_DIR = "/kaggle/input/buali-audio/audio"     # <- your recordings
-TRUTH_DIR = "/kaggle/input/buali-audio/truth"     # <- or None if unlabelled
-MODELS    = ["whisper", "whisper-large-v3-turbo", "seamless"]
-LANGUAGE  = "fa"
+def find_labels():
+    \"\"\"The dataset's labels.csv, wherever Kaggle mounted it.\"\"\"
+    roots = [pathlib.Path("/kaggle/input"), pathlib.Path.cwd(), REPO.parent]
+    for root in roots:
+        if not root.exists():
+            continue
+        for found in sorted(root.glob("*/*/labels.csv")) + sorted(root.glob("*/labels.csv")):
+            return found
+    raise SystemExit("no labels.csv found — attach the dataset with Add Input")
+
+
+LABELS = find_labels()
+print("dataset:", LABELS.parent)
 
 # /kaggle/working is the writable half of the runtime, and the only directory
-# Kaggle keeps when the session ends.
-OUT_DIR   = pathlib.Path("/kaggle/working/benchmark_results")
-
-# Whisper's encoder is fixed at 30 seconds; every model gets the same windows so
-# a long-audio penalty is never mistaken for a model being worse.
-WINDOW_SEC, OVERLAP_SEC = 28.0, 3.0
+# Kaggle keeps when the session ends. Results must go here.
+OUT_DIR = pathlib.Path("/kaggle/working/benchmark_results")
 """)
 
-md("## 4. Load the dataset")
+md("## 4. Load it")
 
 code("""
-items = dataset.from_directory(AUDIO_DIR, TRUTH_DIR)
+items = dataset.from_csv(LABELS)
 census = dataset.describe(items)
-census
-""")
 
-code("""
-assert items, "no audio found — check AUDIO_DIR"
+assert items, f"no recordings in {LABELS}"
 assert not census["missing_audio"], census["missing_audio"][:5]
-
-# Prove the results can be written before spending the GPU time, not after.
-leaderboard.check_writable(OUT_DIR)
+leaderboard.check_writable(OUT_DIR)   # prove it before spending the GPU time
 
 for item in items[:5]:
     audio, sr = dataset.load_audio(item.audio)
     print(f"  {item.asset_id:20} {len(audio)/sr:7.1f}s  labelled={item.labelled}")
+census
+""")
+
+md("""
+## 5. Plan the campaign
+
+Every configuration is written down before anything runs, and each model is
+placed in the highest precision these cards can hold:
+
+| Tier | | |
+|---|---|---|
+| **A** | native | fits unquantized — the number means what it says |
+| **B** | quantized | only as far as it had to be, int8 before nf4 |
+| **C** | deferred | does not fit here; planned, not run |
+
+Tier C is the *same models* as tier B at full precision. It stays in the plan so
+the gap is visible: run one on hardware that can hold it and the difference
+against tier B is the quantization penalty.
+
+Trim the lists below for a first pass — the full matrix is thousands of runs.
+""")
+
+code("""
+import campaign, plan as plan_module, tiers
+
+usable, cards = tiers.usable_vram()
+print(f"{cards} GPU(s), ~{usable:.1f} GB usable each")
+print(f"~{usable * cards:.1f} GB if a model is sharded across both")
+
+runs = plan_module.build(
+    stt_models=["whisper", "whisper-large-v3-turbo", "seamless"],
+    llm_models=["aya-expanse-8b"],          # add more once one has worked
+    usable_gb=usable, cards=cards,
+    pipelines=("separate",),
+    preprocessing=("adaptive",),
+    max_slots=1,
+    cloud=[],                                # e.g. ["gemini:gemini-2.5-pro"]
+)
+
+ledger.write_json(OUT_DIR / "plan.json", runs)
+ledger.write_csv(OUT_DIR / "plan.csv", plan_module.to_rows(runs))
+print(plan_module.summarize(runs))
+for run in runs[:8]:
+    print(f"  {run['tier']}  {run['preprocessing']:13} {run['pipeline']:11} "
+          f"stt={'+'.join(run['stt_models']) or '-':24} llm={run['llm_model']:18} "
+          f"{run['placement']}")
 """)
 
 md("""
 ### Dry run first
 
-A stub model, no weights. Exercises decoding, windowing, stitching, scoring and
-writing in seconds — so a wrong path costs you that, and not a 10 GB download
-followed by a failure.
+Stub models, no weights. Exercises decoding, windowing, stitching, the LLM
+stage, scoring and the CSV writing in seconds — so a wrong path costs you that,
+not a 10 GB download followed by a failure.
 """)
 
 code("""
-_, dry_results, _ = run_benchmark.run(
-    items[:3], models=["dry-run"], model_factory=transcribe.dry_run_factory,
-    window_sec=WINDOW_SEC, overlap_sec=OVERLAP_SEC)
-print(f"plumbing OK — {len(dry_results)} labelled recording(s) scored end to end")
+import session
+
+dry = session.work_through(
+    runs[:2], items, OUT_DIR / "_dryrun",
+    model_factory=transcribe.dry_run_factory,
+    llm_factory=llm.dry_run_factory)
+print("plumbing OK —", len(dry["performed"]), "run(s) written end to end")
 """)
 
 md("""
-## 5. Run
+## 6. Work through it
 
-One model at a time, replicated across both GPUs with the batch split between
-them: throughput doubles and no number changes. Peak memory stays one model's
-worth however many are being compared.
+**Stop this session whenever you like.** A run is finished when its CSV exists,
+so nothing in flight is ever lost — there is nothing in flight. Run this cell
+again next session and it continues from what is on disk.
 
-Roughly *(audio hours) × (models) × RTF*. Progress prints per recording.
+`max_minutes` stops *between* runs on purpose: better to leave forty minutes
+unused than start a run Kaggle kills at minute thirty-nine having written
+nothing. Kaggle's hard cap is twelve hours.
 """)
 
 code("""
-for device in transcribe.describe_devices():
-    print(f"  {device['device']:9} {device['name']} ({device['total_vram_gb']} GB)")
-
-runs, results, summary = run_benchmark.run(
-    items,
-    models=MODELS,
-    language=LANGUAGE,
-    window_sec=WINDOW_SEC,
-    overlap_sec=OVERLAP_SEC,
-    on_progress=lambda t: print(f"  [{t.model}] {t.asset_id}: "
-                                f"{t.error or f'{t.real_time_factor:.2f}x real time'}",
-                                flush=True),
+report = session.work_through(
+    runs, items, OUT_DIR,
+    tier="A",                       # finish A before starting B
+    budget=ledger.Budget(minutes=300),
+    on_run=lambda run, outcome: print(
+        f"  [{outcome['status']:7}] {run['run_id']}  {run['tier']}  "
+        f"{run['preprocessing']:13} {'+'.join(run['stt_models']) or '-':22} "
+        f"{outcome.get('seconds', 0):.0f}s", flush=True),
 )
-print("\\ndone")
+
+print()
+print(f"{len(report['performed'])} run(s) this session, "
+      f"{report['remaining']} still pending")
+if report["stopped_because"]:
+    print("stopped:", report["stopped_because"])
+report["status"]
 """)
 
 md("""
-## 6. Optional — the two embedding metrics
+## 7. Combine
 
-BERTScore and semantic similarity load a second model, so they are off by
-default. This adds them for the whole batch in one pass; skip it if you only
-need WER and the clinical metrics.
+Rebuilds the leaderboard from whatever is on disk — so it always reflects the
+runs that actually completed, across however many sessions it took.
 """)
 
 code("""
-# !pip install -q bert-score sentence-transformers   # uncomment on first run
+print(session.combine(OUT_DIR))
 
-usable, reason = bridge.semantic_available()
-print("semantic extras:", "available" if usable else f"not installed — {reason}")
-
-if usable:
-    scoring.add_semantic(results, summary)
-    print("added:", list(summary["models"][0]["semantic"]))
-""")
-
-md("""
-## 7. The batch leaderboard
-
-One row per model over the whole batch, accuracy and cost side by side on
-purpose: a model that wins on WER while running at four times real time on a T4
-has not won anything deployable.
-
-**`WER` is the corpus WER** — total edits over total reference words — not the
-mean of the per-report WERs, which would weight a one-line finding exactly like
-a multi-minute study. `p50`/`p90` beside it describe the spread.
-
-`latin` / `latin(ref)` are script contamination: the share of letters that are
-not Arabic-script, in the transcript and in the ground truth. **Read the gap,
-not the number** — this corpus code-switches English radiology terms on purpose,
-so a correct transcript is "contaminated" too.
-""")
-
-code("""
 import pandas as pd
 
-board = leaderboard.to_dataframe(summary)
-board[["model", "reports", "corpus_wer", "corpus_cer", "wer_p50", "wer_p90",
-       "chrf_mean", "medical_term_f1", "negation_error_rate",
-       "laterality_error_rate", "number_error_rate", "unit_error_rate",
-       "critical_omission_rate", "unsupported_addition_rate",
-       "repetition_score_p95", "script_contamination_mean",
-       "reference_script_contamination_mean", "insertion_rate", "review_rate",
-       "pct_catastrophic", "real_time_factor", "throughput", "peak_vram_gb"]]
+board = pd.read_csv(OUT_DIR / "leaderboard.csv")
+board
 """)
 
-code("""
-from IPython.display import Markdown
 
-Markdown(leaderboard.to_markdown(summary))
-""")
 
 md("""
-### WER by recording length
+## 8. Read the results
 
-Long audio is where windowing and stitching can go wrong, and where a model with
-a short attention span quietly degrades. One overall WER hides both.
+The leaderboard is one row per run. **`WER` is the corpus WER** — total edits
+over total reference words — not the mean of the per-report WERs, which would
+weight a one-line finding like a multi-minute study.
+
+Do not rank on it. These reports are templated enough that a *different
+patient's* report can score a better WER than a correctly reworded one, and
+flipping left for right moves it by 0.009. Rank on the clinical columns:
+negation, laterality, number, unit, critical omissions, term F1.
 """)
 
 code("""
-pd.DataFrame({
-    bucket["model"]: {name: figures["wer"]
-                      for name, figures in bucket["by_duration"].items()}
-    for bucket in summary["models"]
-}).T
-""")
-
-code("""
-# Everything summarize() produced for one model. The table above is a readable
-# subset; this is the full set.
 import json
 
-print(json.dumps(summary["models"][0], ensure_ascii=False, indent=2)[:3000])
+columns = [c for c in ["model", "tier", "precision", "preprocessing", "pipeline",
+                       "reports", "corpus_wer", "corpus_cer", "chrf_mean",
+                       "medical_term_f1", "negation_error_rate",
+                       "laterality_error_rate", "number_error_rate",
+                       "unit_error_rate", "critical_omission_rate",
+                       "repetition_score_p95", "review_rate", "pct_catastrophic"]
+           if c in board.columns]
+board[columns].sort_values("corpus_wer")
 """)
 
 md("""
-## 8. What went wrong
+## 9. What went wrong
 
-An aggregate says a model is 12% wrong; it never says *which* 12%. These are the
-recordings to read before trusting any of the numbers above.
+An aggregate says a configuration is 12% wrong; it never says *which* 12%.
+These are the recordings to read before trusting any of the numbers above.
 """)
 
 code("""
-pd.DataFrame(leaderboard.worst(results, count=15))
+reports = pd.read_csv(OUT_DIR / "all_reports.csv")
+print(f"{len(reports)} scored report(s) across "
+      f"{reports['run_id'].nunique()} run(s)")
+print()
+
+worst = reports.sort_values("wer", ascending=False).head(15)
+worst[[c for c in ["asset_id", "run_id", "llm_model", "stt_models", "wer",
+                   "medical_term_f1", "n_laterality_errors", "review_reasons"]
+       if c in worst.columns]]
 """)
 
 code("""
 from collections import Counter
 
-flagged = [r for r in results if r["requires_medical_review"]]
-print(f"{len(flagged)} of {len(results)} scored reports need review\\n")
-Counter(reason for r in flagged for reason in r["review_reasons"]).most_common()
+flagged = reports[reports["requires_medical_review"].astype(str).str.lower() == "true"]
+print(f"{len(flagged)} of {len(reports)} reports need a human look")
+print()
+Counter(reason for reasons in flagged.get("review_reasons", [])
+        for reason in str(reasons).split(";") if reason).most_common()
 """)
 
 md("""
-## 9. Read one recording side by side
+## 10. Read one recording side by side
 
-Set `ASSET` to anything from the table above. Critical errors are the ones that
-change what a report means — a flipped negation, a wrong side, a wrong number.
+Critical errors are the ones that change what a report means — a flipped
+negation, a wrong side, a wrong number.
 """)
 
 code("""
-assert results, "nothing was scored — this run had no ground truth"
-ASSET = results[0]["asset_id"]
+ASSET = reports.iloc[0]["asset_id"]
+rows = reports[reports["asset_id"] == ASSET]
 
-reference = next(i.reference for i in items if i.asset_id == ASSET)
-print(f"REFERENCE\\n{reference}\\n")
-
-for result in [r for r in results if r["asset_id"] == ASSET]:
-    said = next(t.text for run in runs for t in run.transcripts
-                if t.asset_id == ASSET and t.model == result["model"])
-    print(f"--- {result['model']}  WER={result['general']['wer']:.3f} "
-          f"F1={result['clinical_metrics']['medical_term_f1']:.3f}")
-    print(said)
-    for error in result["critical_errors"]:
-        print(f"    ! {error['type']}: {error['reference']} -> {error['prediction']}")
+print("REFERENCE")
+print(rows.iloc[0]["reference"])
+print()
+for _, row in rows.iterrows():
+    print(f"--- {row.get('llm_model')} / {row.get('stt_models')}  "
+          f"WER={row['wer']:.3f}  F1={row.get('medical_term_f1')}")
+    print(row["hypothesis"])
     print()
 """)
 
-md("## 10. Save")
+md("""
+## 11. Save
+
+Everything is already on disk — each run wrote its CSV as it finished. This
+just lists it.
+""")
 
 code("""
-leaderboard.write(OUT_DIR, results, summary, runs)
-
-for path in sorted(OUT_DIR.iterdir()):
-    print(f"  {path.name:20} {path.stat().st_size / 1024:9.1f} KB")
+for path in sorted(OUT_DIR.rglob("*")):
+    if path.is_file():
+        print(f"  {str(path.relative_to(OUT_DIR)):44} {path.stat().st_size / 1024:8.1f} KB")
 """)
 
 md("""
 | File | What it is |
 |---|---|
-| `leaderboard.csv` | one row per model — the table above |
-| `leaderboard.md` | the same, as markdown |
-| `per_report.csv` | one row per recording per model, with reference and hypothesis |
-| `summary.json` | the full nested batch summary |
-| `results.json` | the full per-report scores |
-| `transcripts.json` | what every model said, including unlabelled recordings |
+| `plan.csv` | every configuration, its tier and placement |
+| `runs/<run_id>.csv` | one run's per-recording scores — written as it finished |
+| `summaries/<run_id>.json` | that run's aggregate, plus the configuration |
+| `leaderboard.csv` | one row per completed run |
+| `all_reports.csv` | every scored report from every run |
+| `transcripts/` | the STT cache — reused by later runs, so keep it |
 
-Both CSVs are UTF-8 with a BOM, so Excel reads the Persian correctly.
-
-`transcripts.json` covers recordings with no ground truth too — those drafts are
-the starting point for the next labelling round.
+Download the folder from the output panel before the session ends. Next session:
+attach the dataset again, re-run the cells, and section 6 picks up from the runs
+already recorded — **keep `transcripts/` and the STT stage is skipped entirely.**
 """)
 
 

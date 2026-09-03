@@ -142,6 +142,24 @@ benchmarkable; nothing in this folder lists models by name.
 
 ### On Kaggle
 
+The recordings and labels live in their own repository, published as a Kaggle
+Dataset: **`internetanalyst/spin-buali-dataset`**. Attach it with *Add Input*
+and it mounts read-only under `/kaggle/input/`.
+
+The notebook finds it by looking for a `labels.csv`, so the slug does not have
+to match and a renamed dataset does not break the run:
+
+```
+/kaggle/input/spin-buali-dataset/
+└── Small_Demo/
+    ├── DPM89130.MP3 ...
+    └── labels.csv
+```
+
+Results go to `/kaggle/working/benchmark_results` — the writable half of the
+runtime, and the only directory Kaggle keeps.
+
+
 [`notebooks/kaggle_dual_t4.ipynb`](notebooks/kaggle_dual_t4.ipynb) is
 **self-contained**. Upload it, set the accelerator to **GPU T4 ×2** and Internet
 to **On** (the weights come from Hugging Face), and Run All. Nothing to clone,

@@ -1,17 +1,21 @@
-"""The notebook is a build artifact, and two things can go wrong with one: it
-drifts from the source it was generated from, or it turns out not to be
-self-contained after all.
+"""The notebook is now a flat rewrite, not the repo's modules.
 
-The second is the one worth testing hardest. These reconstruct the module tree
-from the notebook's own cells in a temporary directory, with this repo kept off
-`sys.path`, and run a benchmark there -- which is what Kaggle does.
+That is what makes it readable — every function is defined in a cell you can
+edit and re-run — and it is also the risk: two implementations of the same
+metrics can drift apart, and nothing about a green test suite would say so.
+
+So the important test here does not check the notebook's structure. It runs
+the notebook's own scoring cells in a clean process and checks that they give
+the same numbers as `evaluation/`. If someone changes one and not the other,
+this fails.
 """
-import importlib.util
+import ast
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -19,47 +23,133 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 NOTEBOOK = REPO / "benchmark" / "notebooks" / "kaggle_dual_t4.ipynb"
 BUILDER = REPO / "benchmark" / "notebooks" / "build_notebook.py"
 
-# Cells that cannot run off Kaggle: shell installs, and the GPU assertion.
-SKIP_MARKERS = ("Accelerator to GPU T4",)
+# Cells that need a GPU, the dataset, or the network, and so cannot run here.
+UNRUNNABLE = ("!pip", "find_labels", "load_audio", "torch.cuda.get_device")
 
-# Stop once every module is on disk. The cell after this one lists the model
-# registry, which imports torch -- always present on Kaggle, not necessarily
-# here, and not needed by the dry-run path these tests exercise.
-STOP_MARKER = 'write("benchmark/run_benchmark.py"'
+# Report pairs the two implementations must agree on. Chosen for the failure
+# each one represents, not for coverage.
+CASES = [
+    ("identical",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis.",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("side flipped",
+     "There is a 6 mm stone in the distal left ureter. No hydronephrosis.",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("negation dropped",
+     "There is a 6 mm stone in the distal right ureter. Hydronephrosis is present.",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("number wrong",
+     "There is a 7 mm stone in the distal right ureter. No hydronephrosis.",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("unit wrong",
+     "There is a 6 cm stone in the distal right ureter. No hydronephrosis.",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("empty",
+     "",
+     "There is a 6 mm stone in the distal right ureter. No hydronephrosis."),
+    ("looping",
+     "The liver is normal. " * 40,
+     "The liver is normal."),
+]
 
-HAS_TORCH = importlib.util.find_spec("torch") is not None
+# Fields both implementations compute, under the same name.
+SHARED = ["wer", "cer", "medical_term_f1", "negation_errors", "laterality_errors",
+          "number_errors", "unit_errors", "critical_omissions",
+          "unsupported_additions", "requires_medical_review"]
 
 
 def code_cells(notebook):
     return [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
 
 
-def setup_source(notebook):
-    """The writer cell plus every embedded module -- the whole of section 2."""
+def strip_magics(source):
+    return "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith(("!", "%")))
+
+
+def scoring_source(notebook):
+    """Every cell up to and including the scorer, with the unrunnable ones out.
+
+    This is the notebook's metric implementation, lifted whole -- so what the
+    comparison below scores really is what a Kaggle session would run.
+    """
     collected = []
     for cell in code_cells(notebook):
         source = "".join(cell["source"])
-        if any(marker in source for marker in SKIP_MARKERS):
+        if any(marker in source for marker in UNRUNNABLE):
             continue
-        source = "\n".join(line for line in source.splitlines()
-                           if not line.lstrip().startswith(("!", "%")))
-        if not source.strip():
-            continue
-        collected.append(source)
-        if STOP_MARKER in source:
+        collected.append(strip_magics(source))
+        if "def score_report" in source:
             break
     return "\n\n".join(collected)
 
 
-def run_driver(tmp_path, notebook, tail):
-    """Execute the notebook's section 2, then `tail`, in an isolated process."""
-    driver = tmp_path / "driver.py"
-    driver.write_text(setup_source(notebook) + "\n\n" + tail, encoding="utf-8")
-    # cwd is the temp dir and PYTHONPATH is stripped, so sys.path[0] is the temp
-    # dir and nothing from this repo is importable.
-    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    return subprocess.run([sys.executable, str(driver)], cwd=str(tmp_path),
-                          capture_output=True, text=True, env=env)
+HEADER = (
+    "import gc, hashlib, io, json, os, re, time, unicodedata, warnings\n"
+    "from collections import Counter\n"
+    "from dataclasses import dataclass, field\n"
+    "from pathlib import Path\n"
+    "import numpy as np\n"
+    "warnings.filterwarnings('ignore')\n"
+)
+
+
+def _run(driver_source, name):
+    """Run a generated script and read back the scores it wrote.
+
+    Through a file, not stdout: the notebook's cells print demonstrations of
+    their own output, which is right for a notebook and useless for a pipe.
+    """
+    workspace = pathlib.Path(tempfile.mkdtemp())
+    output = workspace / "scores.json"
+    script = workspace / name
+    script.write_text(driver_source(output), encoding="utf-8")
+
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    result = subprocess.run([sys.executable, str(script)], capture_output=True,
+                            text=True, encoding="utf-8", env=env)
+    assert result.returncode == 0, result.stderr[-3000:]
+    return json.loads(output.read_text(encoding="utf-8"))
+
+
+def run_notebook_scorer(cases):
+    """Score `cases` with the notebook's own code, in a clean process."""
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+
+    def driver(output):
+        return (
+            HEADER + scoring_source(notebook) + "\n\n"
+            "import json as _json, pathlib as _pathlib\n"
+            f"_cases = {cases!r}\n"
+            "_out = [score_report(h, r) for _, h, r in _cases]\n"
+            f"_pathlib.Path({str(output)!r}).write_text("
+            "_json.dumps(_out), encoding='utf-8')\n"
+        )
+
+    return _run(driver, "notebook_cells.py")
+
+
+def run_repo_scorer(cases):
+    """The same cases through `evaluation/`."""
+    def driver(output):
+        return (
+            "import json, pathlib, sys\n"
+            f"sys.path.insert(0, {str(REPO / 'evaluation')!r})\n"
+            "from extractors import ClinicalTerms\n"
+            "from medical_metrics import evaluate\n"
+            "terms = ClinicalTerms()\n"
+            f"cases = {cases!r}\n"
+            "out = []\n"
+            "for _, hypothesis, reference in cases:\n"
+            "    r = evaluate(hypothesis, reference, terms)\n"
+            "    flat = {**r['general'], **r['clinical_counts'], **r['clinical_metrics']}\n"
+            "    flat['requires_medical_review'] = r['requires_medical_review']\n"
+            "    out.append(flat)\n"
+            f"pathlib.Path({str(output)!r}).write_text("
+            "json.dumps(out), encoding='utf-8')\n"
+        )
+
+    return _run(driver, "repo_scorer.py")
 
 
 @pytest.fixture(scope="module")
@@ -67,107 +157,95 @@ def notebook():
     return json.loads(NOTEBOOK.read_text(encoding="utf-8"))
 
 
-class TestItIsGeneratedFromTheSource:
-    def test_the_committed_notebook_matches_the_current_source(self):
-        """If this fails, a module changed and the notebook was not rebuilt --
-        run `python benchmark/notebooks/build_notebook.py`. It is the whole
-        safeguard against the notebook and the tested code drifting apart."""
+@pytest.fixture(scope="module")
+def both_scorers():
+    return run_notebook_scorer(CASES), run_repo_scorer(CASES)
+
+
+class TestTheNotebookIsGenerated:
+    def test_the_committed_notebook_matches_the_generator(self):
+        """Run `python benchmark/notebooks/build_notebook.py` after editing it."""
         before = NOTEBOOK.read_bytes()
         subprocess.run([sys.executable, str(BUILDER)], check=True,
                        capture_output=True, cwd=str(BUILDER.parent))
         assert NOTEBOOK.read_bytes() == before, "notebook is stale; re-run build_notebook.py"
 
-    def test_every_source_file_is_embedded(self, notebook):
-        """The embedding is verbatim, so the code that runs on Kaggle is
-        character-for-character the code the rest of this suite covers."""
-        spec = importlib.util.spec_from_file_location("builder", BUILDER)
-        builder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(builder)
-
-        embedded = "".join("".join(cell["source"]) for cell in code_cells(notebook))
-        for source_path, destination, _ in builder.SOURCES:
-            text = (REPO / source_path).read_text(encoding="utf-8")
-            assert text in embedded, f"{source_path} is not embedded verbatim"
-            assert f'write("{destination}"' in embedded
-
     def test_every_code_cell_is_valid_python(self, notebook):
-        import ast
-
+        """None of these would fail until the cell ran on Kaggle, hours in."""
         for index, cell in enumerate(code_cells(notebook)):
-            source = "\n".join(line for line in "".join(cell["source"]).splitlines()
-                               if not line.lstrip().startswith(("!", "%")))
             try:
-                ast.parse(source)
+                ast.parse(strip_magics("".join(cell["source"])))
             except SyntaxError as error:
-                pytest.fail(f"code cell {index}: {error}")
+                pytest.fail(f"code cell {index}: line {error.lineno}: {error.msg}")
+
+    def test_it_defines_its_code_rather_than_writing_files(self, notebook):
+        """The point of the rewrite: cells contain code, not strings of code."""
+        source = "".join("".join(c["source"]) for c in code_cells(notebook))
+        assert "write(\"benchmark/" not in source
+        assert "def score_report" in source, "the scorer is defined in a cell"
+        assert "class WhisperSTT" in source, "the models are defined in cells"
+
+    def test_it_needs_nothing_from_this_repo(self, notebook):
+        source = "".join("".join(c["source"]) for c in code_cells(notebook))
+        for forbidden in ("import bridge", "import settings", "from schemas",
+                          "import evaluate_results"):
+            assert forbidden not in source, f"notebook still imports {forbidden}"
 
 
-class TestItIsActuallySelfContained:
-    def test_it_reconstructs_and_runs_with_the_repo_off_the_path(self, notebook, tmp_path):
-        """The claim the whole design rests on."""
-        result = run_driver(tmp_path, notebook, RUN_A_BENCHMARK)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "SELF-CONTAINED OK" in result.stdout, result.stdout
+class TestItAgreesWithTheEvaluationService:
+    """The guard that matters. Two implementations, one set of numbers."""
 
-    def test_the_reconstructed_tree_mirrors_the_repo(self, notebook, tmp_path):
-        """The layout is not arbitrary: each module keeps its own imports only
-        because `evaluation/` and `stt/` land beside `benchmark/`."""
-        result = run_driver(tmp_path, notebook, LIST_THE_TREE)
-        assert result.returncode == 0, result.stdout + result.stderr
-        for folder in ("benchmark", "evaluation", "stt"):
-            assert folder in result.stdout, result.stdout
+    def test_the_shared_metrics_match(self, both_scorers):
+        notebook_scores, repo_scores = both_scorers
+        mismatches = []
+        for (label, _, _), mine, theirs in zip(CASES, notebook_scores, repo_scores):
+            for field in SHARED:
+                if field not in theirs:
+                    continue
+                a, b = mine.get(field), theirs.get(field)
+                if isinstance(a, float) or isinstance(b, float):
+                    if abs((a or 0) - (b or 0)) > 0.02:
+                        mismatches.append(f"{label}.{field}: notebook={a} evaluation={b}")
+                elif a != b:
+                    mismatches.append(f"{label}.{field}: notebook={a} evaluation={b}")
+        assert not mismatches, "the notebook and evaluation/ disagree:\n  " + \
+            "\n  ".join(mismatches)
 
-    @pytest.mark.skipif(not HAS_TORCH, reason="torch is not installed here")
-    def test_the_model_registry_loads_from_the_reconstructed_tree(self, notebook, tmp_path):
-        """The stt half, which the dry-run path never touches."""
-        result = run_driver(tmp_path, notebook, LOAD_THE_REGISTRY)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "REGISTRY OK" in result.stdout
+    def test_a_flipped_side_is_caught_by_both(self, both_scorers):
+        """The error WER shrugs at. If either implementation stops catching it,
+        the benchmark is ranking on the wrong thing."""
+        notebook_scores, repo_scores = both_scorers
+        index = [c[0] for c in CASES].index("side flipped")
+        assert notebook_scores[index]["laterality_errors"] > 0
+        assert repo_scores[index]["laterality_errors"] > 0
+        assert notebook_scores[index]["wer"] < 0.15, "WER barely moves — that is the point"
+
+    def test_a_dropped_negation_is_caught_by_both(self, both_scorers):
+        notebook_scores, repo_scores = both_scorers
+        index = [c[0] for c in CASES].index("negation dropped")
+        assert notebook_scores[index]["negation_errors"] > 0
+        assert repo_scores[index]["negation_errors"] > 0
+
+    def test_a_looping_model_is_caught_by_both(self, both_scorers):
+        """No clinical counter fires on a repeated plausible sentence."""
+        notebook_scores, repo_scores = both_scorers
+        index = [c[0] for c in CASES].index("looping")
+        assert notebook_scores[index]["requires_medical_review"] is True
+        assert repo_scores[index]["requires_medical_review"] is True
+
+    def test_a_perfect_report_scores_perfectly_in_both(self, both_scorers):
+        notebook_scores, repo_scores = both_scorers
+        index = [c[0] for c in CASES].index("identical")
+        assert notebook_scores[index]["wer"] == 0.0 == repo_scores[index]["wer"]
+        assert notebook_scores[index]["medical_term_f1"] == 1.0
 
 
-RUN_A_BENCHMARK = '''
-import dataset, leaderboard, run_benchmark, transcribe
-import numpy as np, soundfile as sf
+class TestTheNotebookRuns:
+    def test_the_scoring_cells_execute_end_to_end(self):
+        """Not just parseable — actually runnable, in a clean interpreter."""
+        scores = run_notebook_scorer([CASES[0]])
+        assert scores[0]["wer"] == 0.0
 
-audio_dir, truth_dir = SRC.parent / "audio", SRC.parent / "truth"
-audio_dir.mkdir(parents=True, exist_ok=True)
-truth_dir.mkdir(parents=True, exist_ok=True)
-for name, seconds in (("A1", 4.0), ("A2", 70.0)):
-    sf.write(str(audio_dir / (name + ".wav")),
-             np.zeros(int(seconds * 16000), np.float32), 16000)
-    (truth_dir / (name + ".txt")).write_text(
-        "There is a 6 mm stone in the distal right ureter. No hydronephrosis.",
-        encoding="utf-8")
-
-items = dataset.from_directory(audio_dir, truth_dir)
-runs, results, summary = run_benchmark.run(
-    items, models=["dry-run"], model_factory=transcribe.dry_run_factory)
-
-bucket = summary["models"][0]
-assert len(results) == 2, results
-assert "corpus_wer" in bucket["corpus"]
-assert bucket["by_duration"], "duration buckets missing"
-assert "script_contamination_mean" in bucket["text"]
-
-out = SRC.parent / "out"
-leaderboard.write(out, results, summary, runs)
-written = sorted(p.name for p in out.iterdir())
-assert "leaderboard.csv" in written and "per_report.csv" in written, written
-
-print("windows for the 70s clip:",
-      max(t.windows for run in runs for t in run.transcripts))
-print("files written:", written)
-print("SELF-CONTAINED OK")
-'''
-
-LIST_THE_TREE = '''
-print(sorted(str(p.relative_to(SRC)) for p in SRC.rglob("*.py")))
-'''
-
-LOAD_THE_REGISTRY = '''
-import bridge
-
-registry = bridge.model_registry()
-assert registry, "registry is empty"
-print("REGISTRY OK", len(registry))
-'''
+    def test_the_vocabulary_loads_in_the_notebook(self, notebook):
+        source = "".join("".join(c["source"]) for c in code_cells(notebook))
+        assert "CONCEPTS = [" in source and "TERM_INDEX" in source

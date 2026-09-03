@@ -142,103 +142,44 @@ benchmarkable; nothing in this folder lists models by name.
 
 ### On Kaggle
 
-The recordings and labels live in their own repository, published as a Kaggle
-Dataset: **`internetanalyst/spin-buali-dataset`**. Attach it with *Add Input*
-and it mounts read-only under `/kaggle/input/`.
+[`notebooks/kaggle_dual_t4.ipynb`](notebooks/kaggle_dual_t4.ipynb) is a normal
+notebook: **every class and function is defined in a cell you can read, edit and
+re-run.** Nothing is written to disk and imported back, and it imports nothing
+from this repo.
 
-The notebook finds it by looking for a `labels.csv`, so the slug does not have
-to match and a renamed dataset does not break the run:
+Attach the `spin-buali-dataset` dataset under *Add Input*, set the accelerator
+to **GPU T4 ×2**, Internet **On**, and Run All. Results go to
+`/kaggle/working/results`, the only directory Kaggle keeps.
 
-```
-/kaggle/input/spin-buali-dataset/
-└── Small_Demo/
-    ├── DPM89130.MP3 ...
-    └── labels.csv
-```
+It is still **generated** — `build_notebook.py` writes it, and the clinical
+vocabulary is read out of `evaluation/clinical_terms.json` so the two cannot
+disagree about the terms. But the code in the cells is a flat rewrite, not these
+modules: the modules exist to be services, and a notebook does not want a
+service layer.
 
-Results go to `/kaggle/working/benchmark_results` — the writable half of the
-runtime, and the only directory Kaggle keeps.
-
-
-[`notebooks/kaggle_dual_t4.ipynb`](notebooks/kaggle_dual_t4.ipynb) is
-**self-contained**. Upload it, set the accelerator to **GPU T4 ×2** and Internet
-to **On** (the weights come from Hugging Face), and Run All. Nothing to clone,
-no dataset to attach.
-
-It is also **generated**, not hand-written. `build_notebook.py` embeds each of
-the seventeen source files into a cell that writes it back to disk in the same
-three-folder layout the repo uses; the notebook then imports it unchanged. So
-the code that runs on Kaggle is character-for-character the code the tests
-cover — a self-contained notebook without the usual price of one, which is a
-second implementation that quietly drifts from the first.
-
-**After changing anything under `benchmark/`, `evaluation/` or `stt/app/`:**
+**That means two implementations of the same metrics, which can drift.** So
+`tests/test_notebook.py` runs the notebook's own scoring cells in a clean
+process and compares them against `evaluation/` on seven report pairs — a side
+flip, a dropped negation, a wrong number, a wrong unit, an empty output, a
+looping model. If someone changes one and not the other, it fails.
 
 ```bash
-python benchmark/notebooks/build_notebook.py
+python benchmark/notebooks/build_notebook.py    # after editing the generator
 ```
 
-`tests/test_notebook.py` fails if you forget, and separately reconstructs the
-tree in a temp directory with this repo off `sys.path` and runs a benchmark
-there — so "self-contained" is a tested claim, not an intention.
+## What the notebook contains
 
-Set the accelerator to **GPU T4 ×2**. The notebook checks that both GPUs are
-visible before it starts, since a session that quietly fell back to one takes
-twice as long to tell you. It also runs a stub-model dry run over three
-recordings before loading any weights, so a wrong path costs seconds.
+| Section | |
+|---|---|
+| 1–2 | setup, and the dataset from `labels.csv` |
+| 3 | scoring — normalisation, the vocabulary, extractors, metrics, `score_report` |
+| 4 | models — the STT classes, and LLM placement by tier |
+| 5 | the pipeline: transcripts → report, using the controller's prompts verbatim |
+| 6 | `run_configuration()` — one config, one CSV |
+| 7–9 | tier A, tier B, and what tier C would need |
+| 10–13 | the leaderboard, the failures, one recording side by side |
 
-**Results go to `/kaggle/working`** — the writable half of the runtime, and the
-only directory Kaggle keeps when the session ends.
-
-## The campaign: three tiers, resumable
-
-A Kaggle session ends when Kaggle decides it ends — twelve hours, no warning,
-and only `/kaggle/working` survives. So the benchmark is not one long job. It
-is a written-down plan worked through a run at a time, where **a run is finished
-when its CSV exists**:
-
-```bash
-python run_benchmark.py plan   --labels Small_Demo/labels.csv --out results/
-python run_benchmark.py work   --out results/ --tier A --max-minutes 300
-python run_benchmark.py status --out results/
-python run_benchmark.py combine --out results/
-```
-
-Stop after any run and nothing is lost, because nothing was in flight. Start
-again and it picks up from what is on disk.
-
-### Why three tiers
-
-Every model is planned, including the ones that do not fit — a benchmark that
-silently drops them tells you the wrong thing, because the missing rows are
-usually the ones you most wanted.
-
-| Tier | | |
-|---|---|---|
-| **A** | native | Fits unquantized. The number means what it says. |
-| **B** | quantized | Only fits compressed, and **only as far as it had to be** — int8 before nf4. The score includes whatever that cost. |
-| **C** | deferred | Does not fit here at any useful precision. Planned, not run. |
-
-Tier C is not a list of failures. It is the **same models as tier B at full
-precision**, kept in the plan so the gap is visible: run one on hardware that
-can hold it and the difference against tier B *is* the quantization penalty.
-Without it, a quantized 32B and a native 8B differ two ways at once and the
-table cannot say which one moved the score.
-
-`python run_benchmark.py --list-tiers` prints the placement for this machine.
-
-### Surviving a killed session
-
-- **The output file is the ledger.** No separate state to fall out of step with
-  the results it describes. Delete a result and it is simply pending again.
-- **Every write is atomic** — temp file, then rename. A session killed
-  mid-write leaves a stray `.tmp`, never a truncated CSV that resume would
-  treat as complete.
-- **`--max-minutes` stops early on purpose.** Better to leave forty minutes
-  unused than start a run that gets killed at minute thirty-nine having written
-  nothing.
-- **Run ids are a hash of the configuration**, so adding a model to the plan
-  renumbers nothing and re-planning is safe.
+25 code cells. The four big ones are the metrics; the rest are short.
 
 ## Unlabelled recordings
 

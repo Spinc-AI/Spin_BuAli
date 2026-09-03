@@ -98,7 +98,8 @@ def _transcribe(run, items, store, devices, model_factory, on_progress, window_k
 
     stt_runs = [transcribe.transcribe_batch(
         model, items, devices=devices, model_factory=model_factory,
-        on_progress=on_progress, **window_kwargs) for model in run["stt_models"]]
+        on_progress=on_progress, preprocessing=run["preprocessing"],
+        **window_kwargs) for model in run["stt_models"]]
 
     transcripts: dict[str, dict[str, str]] = {item.asset_id: {} for item in items}
     for position, stt_run in enumerate(stt_runs, start=1):

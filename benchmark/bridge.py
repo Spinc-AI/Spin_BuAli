@@ -65,7 +65,7 @@ __all__ = [
     "ClinicalTerms", "METRICS_VERSION", "evaluate", "summarize",
     "semantic_available", "semantic_batch",
     "RECONCILE", "TRANSCRIBE_FROM_AUDIO", "with_template", "extract_json",
-    "model_registry", "build_stt_model", "torch_or_none",
+    "model_registry", "build_stt_model", "torch_or_none", "chunk_planner", "speech_regions",
 ]
 
 
@@ -102,6 +102,44 @@ def build_stt_model(key, device):
     spec = dict(stt_config.MODEL_REGISTRY[key])
     cls = stt_model._MODEL_TYPES[spec.pop("type")]
     return cls(model_id=spec.pop("model_id"), device=device, **spec)
+
+
+# --- preprocessing ---------------------------------------------------------
+def chunk_planner():
+    """`preprocessing.plan_chunks` and its default configuration.
+
+    Lazy: `preprocessing/vad.py` reaches for silero and torch, and the caller
+    only wants the chunker. Imported rather than reimplemented because the
+    adaptive strategy -- which nudges every boundary onto the quietest moment
+    nearby, so a cut lands between words instead of through one -- is the whole
+    reason the preprocessing dimension is worth measuring.
+    """
+    _ensure_on_path(settings.PREPROCESSING_DIR)
+    import chunking
+    from common import load_config
+
+    return chunking.plan_chunks, load_config()
+
+
+def speech_regions(audio, sample_rate):
+    """Where preprocessing's VAD thinks the speech is, as [(start, end)].
+
+    Returns None when VAD is unavailable or found nothing, which the caller
+    treats as "chunk the whole recording" -- the same non-destructive stance
+    preprocessing itself takes, where a wrong VAD call costs a line of metadata
+    and never a syllable of audio.
+    """
+    _ensure_on_path(settings.PREPROCESSING_DIR)
+    try:
+        import vad
+        from common import load_config
+
+        report = vad.run_vad(audio, sample_rate, load_config())
+    except Exception:
+        return None
+    spans = [(float(segment["start_sec"]), float(segment["end_sec"]))
+             for segment in report.get("segments") or []]
+    return spans or None
 
 
 def torch_or_none():

@@ -76,6 +76,45 @@ class ModelRun:
 
 
 # --- Windowing -------------------------------------------------------------
+def plan_for(preprocessing, duration, audio=None, sample_rate=None,
+             window_sec=None, overlap_sec=None):
+    """The windows one preprocessing variant asks for.
+
+    `fixed` is this module's own even windowing. The others come from
+    `preprocessing/chunking.py`, which is where the real strategies live --
+    `adaptive` listens to the recording and nudges every boundary onto the
+    quietest moment nearby, so a cut lands between words rather than through
+    one. Reimplementing that here would be a second copy of the thing the
+    benchmark exists to compare.
+
+    Falls back to even windowing if preprocessing is unavailable, because a
+    missing optional dependency should cost a variant, not the run.
+    """
+    if preprocessing in (None, "fixed"):
+        return plan_windows(duration, window_sec, overlap_sec)
+
+    try:
+        plan_chunks, config = bridge.chunk_planner()
+    except Exception:
+        return plan_windows(duration, window_sec, overlap_sec)
+
+    strategy = "adaptive" if preprocessing.startswith("adaptive") else preprocessing
+    settings_for_run = {**config, "chunking": {**config["chunking"], "strategy": strategy}}
+
+    # The "-vad" variants chunk within the detected speech regions instead of
+    # across the whole recording, so a long pause is a boundary rather than
+    # something a window has to spend itself on.
+    regions = None
+    if preprocessing.endswith("-vad") and audio is not None:
+        regions = bridge.speech_regions(audio, sample_rate)
+
+    # Adaptive needs the samples to find the quiet moments; without them
+    # preprocessing itself downgrades to uniform and says so.
+    windows, _ = plan_chunks(duration, settings_for_run, regions=regions,
+                             audio=audio, sr=sample_rate)
+    return windows or plan_windows(duration, window_sec, overlap_sec)
+
+
 def plan_windows(duration, window_sec=None, overlap_sec=None):
     """Cut `duration` into overlapping windows, as [(start, end)] in seconds.
 
@@ -134,7 +173,8 @@ def _seam(left, right, cap):
 
 # --- Running one model over a batch ----------------------------------------
 def transcribe_batch(model_key, items, devices=None, language=None,
-                     model_factory=None, on_progress=None, **window_kwargs):
+                     model_factory=None, on_progress=None, preprocessing=None,
+                     **window_kwargs):
     """Load `model_key` on every device and transcribe `items` across them.
 
     `model_factory(key, device)` is injected so the tests can run the whole
@@ -154,7 +194,7 @@ def transcribe_batch(model_key, items, devices=None, language=None,
         threading.Thread(
             target=_work_shard, name=f"{model_key}@{device}",
             args=(factory, model_key, device, shard, language, run, lock,
-                  on_progress, window_kwargs))
+                  on_progress, preprocessing, window_kwargs))
         for device, shard in zip(devices, shards) if shard
     ]
     for thread in threads:
@@ -171,7 +211,7 @@ def transcribe_batch(model_key, items, devices=None, language=None,
 
 
 def _work_shard(factory, model_key, device, shard, language, run, lock,
-                on_progress, window_kwargs):
+                on_progress, preprocessing, window_kwargs):
     """One device's share of the batch: load once, then transcribe in turn."""
     try:
         loading = time.perf_counter()
@@ -192,7 +232,8 @@ def _work_shard(factory, model_key, device, shard, language, run, lock,
 
     try:
         for item in shard:
-            transcript = _transcribe_one(model, model_key, device, item, language, window_kwargs)
+            transcript = _transcribe_one(model, model_key, device, item, language,
+                                         preprocessing, window_kwargs)
             with lock:
                 run.transcripts.append(transcript)
             if on_progress:
@@ -203,12 +244,14 @@ def _work_shard(factory, model_key, device, shard, language, run, lock,
         model.unload()
 
 
-def _transcribe_one(model, model_key, device, item, language, window_kwargs):
+def _transcribe_one(model, model_key, device, item, language, preprocessing,
+                    window_kwargs):
     transcript = Transcript(asset_id=item.asset_id, model=model_key, device=device)
     try:
         audio, sr = dataset.load_audio(item.audio)
         transcript.audio_seconds = len(audio) / sr
-        windows = plan_windows(transcript.audio_seconds, **window_kwargs)
+        windows = plan_for(preprocessing, transcript.audio_seconds,
+                           audio=audio, sample_rate=sr, **window_kwargs)
         transcript.windows = len(windows)
 
         started = time.perf_counter()

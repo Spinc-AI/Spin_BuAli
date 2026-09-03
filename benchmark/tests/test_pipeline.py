@@ -191,7 +191,7 @@ class TestModelSelection:
         assert "aya" in model.model_id.lower()
 
     def test_an_unknown_key_says_where_to_add_it(self):
-        with pytest.raises(llm_module.LoadFailed, match="core_llm/config.py"):
+        with pytest.raises(llm_module.LoadFailed, match="MODEL_REGISTRY"):
             llm_module.build("no-such-model")
 
     def test_the_precision_from_the_plan_is_carried_through(self):

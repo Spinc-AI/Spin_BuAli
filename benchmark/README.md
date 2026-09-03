@@ -33,6 +33,15 @@ radiology reports, so grading a raw transcript against one would measure a
 translation, not a mistake. Step 4 is what makes this a benchmark of the
 product rather than of one component.
 
+**Preprocessing is a real dimension, not a label.** `fixed` is even windowing;
+`uniform`, `adaptive` and `adaptive-vad` come from `preprocessing/chunking.py`,
+which is where the strategies live. `adaptive` listens to the recording and
+nudges each boundary onto the quietest moment nearby, so a cut lands between
+words rather than through one; the `-vad` variants chunk within the detected
+speech regions, so a long pause becomes a boundary instead of something a
+window spends itself on. A test asserts all four produce different layouts —
+without it, four variants would be four identical runs wearing different names.
+
 **Step 3 is cached** on `(preprocessing, engines)` alone. Trying five prompts
 or three language models costs five or three LLM passes and no speech
 recognition at all — which is the difference between a Kaggle session and a

@@ -131,3 +131,67 @@ class TestDevices:
     def test_devices_describe_themselves(self):
         described = transcribe.describe_devices(["cpu"])
         assert described[0]["device"] == "cpu"
+
+
+class TestPreprocessingVariants:
+    """The preprocessing dimension has to actually change the windows.
+
+    It was once only a label on the cache key, which made four variants four
+    identical runs wearing different names -- worse than not measuring it,
+    because the table would have looked like an answer.
+    """
+
+    @staticmethod
+    def _audio(seconds=120.0, silence=None, sr=16000):
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        samples = (0.08 * rng.standard_normal(int(seconds * sr))).astype("float32")
+        if silence:
+            samples[int(silence[0] * sr):int(silence[1] * sr)] = 0.0
+        return samples, sr
+
+    def test_fixed_is_evenly_spaced(self):
+        windows = transcribe.plan_for("fixed", 120.0, window_sec=28, overlap_sec=3)
+        starts = [round(start) for start, _ in windows]
+        assert starts == [0, 25, 50, 75, 100]
+
+    def test_the_strategies_do_not_all_agree(self):
+        audio, sr = self._audio()
+        layouts = {name: transcribe.plan_for(name, 120.0, audio=audio, sample_rate=sr)
+                   for name in ("fixed", "uniform", "adaptive")}
+        assert len({tuple(w) for w in layouts.values()}) > 1, "variants must differ"
+
+    def test_adaptive_listens_to_the_audio(self):
+        """Given the samples it snaps boundaries to quiet moments; without them
+        preprocessing downgrades it to uniform, which is a different layout."""
+        audio, sr = self._audio(silence=(40, 42))
+        with_audio = transcribe.plan_for("adaptive", 120.0, audio=audio, sample_rate=sr)
+        without = transcribe.plan_for("adaptive", 120.0)
+        assert with_audio != without
+
+    def test_vad_skips_a_long_silence(self):
+        """The point of the -vad variants: a fifteen-second pause becomes a
+        boundary rather than something a window spends itself on."""
+        audio, sr = self._audio(silence=(45, 60))
+        plain = transcribe.plan_for("adaptive", 120.0, audio=audio, sample_rate=sr)
+        guided = transcribe.plan_for("adaptive-vad", 120.0, audio=audio, sample_rate=sr)
+        covered = lambda windows: sum(end - start for start, end in windows)
+        assert covered(guided) < covered(plain), "VAD should cover less, not more"
+
+    def test_an_unknown_variant_falls_back_rather_than_failing(self):
+        assert transcribe.plan_for(None, 60.0)
+        assert transcribe.plan_for("no-such-strategy", 60.0)
+
+    def test_every_planned_variant_is_implemented(self):
+        """Guards the gap directly: a name in the plan that the runner ignores
+        would silently produce duplicate runs."""
+        import plan as plan_module
+
+        # With a real pause in it: VAD only differs from plain adaptive when
+        # there is silence for it to find, which is the honest test.
+        audio, sr = self._audio(silence=(45, 60))
+        layouts = {name: tuple(transcribe.plan_for(name, 120.0, audio=audio, sample_rate=sr))
+                   for name in plan_module.PREPROCESSING}
+        assert len(set(layouts.values())) == len(layouts), (
+            f"variants producing identical windows: {layouts.keys()}")

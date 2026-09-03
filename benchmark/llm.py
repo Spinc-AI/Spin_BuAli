@@ -187,22 +187,32 @@ def build(model_key: str, precision: str = "fp16", cards: int = 1,
 
 
 def _hugging_face_id(model_key: str) -> str:
-    """The checkpoint behind a registry key, read from `core_llm/config.py`.
+    """The checkpoint behind a registry key.
 
-    Read rather than listed here, so adding a model there is enough to make it
-    benchmarkable -- the same rule the STT side follows.
+    Read from `core_llm/`, not listed here, so adding a model there is enough
+    to make it benchmarkable -- the same rule the STT side follows.
+
+    Two files, because that is how core_llm stores it: `model.py` maps the key
+    to a config variable, `config.py` gives that variable its default. Parsed
+    as text rather than imported, since importing core_llm would pull in torch
+    and a module named `config` that collides with two others on the path.
     """
     import os
     import re
 
+    registry = (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
+    match = re.search(rf'"{re.escape(model_key)}":\s*\([^,]+,\s*config\.(\w+)\)', registry)
+    if not match:
+        raise LoadFailed(
+            f"{model_key!r} is not in core_llm/model.py's MODEL_REGISTRY")
+    variable = match.group(1)
+
     source = (settings.REPO_ROOT / "core_llm" / "config.py").read_text(encoding="utf-8")
-    wanted = model_key.replace("-", "_").upper().replace("EXPANSE_", "")
-    for variable, default in re.findall(r'^(\w+_MODEL_ID) = os\.getenv\(\s*"[^"]+",\s*"([^"]+)"',
-                                        source, re.M):
-        stem = variable[:-len("_MODEL_ID")]
-        if stem.replace("_", "") in wanted.replace("_", ""):
-            return os.getenv(variable, default)
-    raise LoadFailed(f"no checkpoint known for {model_key!r} in core_llm/config.py")
+    default = re.search(rf'^{variable} = os\.getenv\(\s*"[^"]+",\s*"([^"]+)"',
+                        source, re.M)
+    if not default:
+        raise LoadFailed(f"{variable} has no default in core_llm/config.py")
+    return os.getenv(variable, default.group(1))
 
 
 class EchoLLM:

@@ -43,7 +43,7 @@ works normally for file-based runs.
    - **Hybrid** — configure both the STT slot(s) and an audio-capable LLM.
 3. Choose the LLM source (local or cloud). For cloud audio through Gemini,
    prefix the model with `gemini:`.
-4. Press `Start session`.
+4. Press `Start job`.
 5. Choose or record an audio file.
 6. Press `Run`. The result — `raw_transcript`, `corrected_transcript`,
    `final_text`, `discrepancies_found`, `notes` — appears in the output box.

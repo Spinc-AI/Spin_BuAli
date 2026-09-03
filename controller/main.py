@@ -1,168 +1,212 @@
-"""Spin BuAli controller -- the HTTP API for turning a spoken radiology
-report into a corrected transcript.
+"""Spin BuAli controller -- the only door into the system.
 
-Configure a session (which pipeline, which models), then POST recordings to
-/run. The pipelines themselves live in pipelines.py; this module is routing,
-validation, and the one active session.
+Stateless. Every request carries everything it needs: the recording, the
+configuration, and the credentials for that one call. The controller stores
+nothing between requests and owns no session, so two callers cannot interfere
+with each other and a restart loses nothing.
 
-Only one session exists at a time: this drives a single radiologist's
-dictation workstation, not concurrent users.
+    POST /internal/jobs/{job_id}/execute     run one recording through a pipeline
+    POST /evaluate                           score a transcript against a reference
+    GET  /  /models  /languages  /llm/models
+
+`job_id` is the caller's identifier, echoed back on the result. The controller
+does not create it, store it, or look it up -- it exists so a result can be
+matched to the request that asked for it.
+
+Routing and validation live here; the work lives in execution.py.
 """
+import hmac
 import json
+import logging
 from typing import Callable
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
 
 import config
 import evaluation_client
+import execution
 import llm_client
-import pipelines
-import providers
 import stt_client
-from schemas import EvaluationRequest, LlmTarget, SessionConfig, SttSlotConfig, reveal
+from execution import AIExecutionError, calculate_config_hash, execute_job
+from schemas import (
+    EvaluationRequest,
+    ExecutionCredentials,
+    JobExecutionResponse,
+    ProcessingConfig,
+)
+
+logger = logging.getLogger("buali.controller")
 
 app = FastAPI(title="Spin BuAli Controller")
 
-_session: SessionConfig | None = None
+
+def _error(code: str, message: str, retryable: bool = False) -> dict:
+    """The body shape every failure uses, so a caller parses one thing."""
+    return {"error_code": code, "message": message, "retryable": retryable}
 
 
-def _require_session() -> SessionConfig:
-    if _session is None:
-        raise HTTPException(409, "no active session — call POST /session first")
-    return _session
+# --- Authentication --------------------------------------------------------
+def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
+    """Allow only the backend, or a developer holding the same secret.
+
+    An unset token fails closed with 503: no secret configured is a deployment
+    mistake, and treating it as "no check needed" would leave the service open
+    at exactly the moment nobody noticed.
+    """
+    if not config.INTERNAL_API_TOKEN:
+        raise HTTPException(503, _error(
+            "INTERNAL_AUTH_NOT_CONFIGURED",
+            "Internal authentication is not configured on this service."))
+    if not x_internal_token:
+        raise HTTPException(401, _error(
+            "UNAUTHORIZED_INTERNAL_CALL", "Internal service token is missing."))
+    # Constant-time: a plain == leaks the secret one character at a time.
+    if not hmac.compare_digest(x_internal_token, config.INTERNAL_API_TOKEN):
+        raise HTTPException(401, _error(
+            "UNAUTHORIZED_INTERNAL_CALL", "Internal service token is invalid."))
 
 
-def _proxy(service: str, fetch: Callable[[], dict]) -> dict:
-    """Forward a lookup to a sibling service, reporting unreachability as 502."""
-    try:
-        return fetch()
-    except Exception as exc:
-        raise HTTPException(502, f"could not reach the {service} service: {exc}")
+authenticated = [Depends(require_internal_token)]
 
 
-# --- health and discovery --------------------------------------------------
+# --- Health and discovery --------------------------------------------------
 @app.get("/")
 def health() -> dict:
+    """Unauthenticated on purpose: a load balancer has no token, and this
+    reveals nothing beyond which services are up."""
     return {
         "buali_controller": "ok",
+        "stateless": True,
         "stt": stt_client.health(),
         "llm": llm_client.health(),
         "evaluation": evaluation_client.health(),
+        "internal_auth_configured": bool(config.INTERNAL_API_TOKEN),
         "openai_key_configured": bool(config.OPENAI_API_KEY),
         "gemini_key_configured": bool(config.GEMINI_API_KEY),
+        "supported_preprocessing_versions": sorted(config.SUPPORTED_PREPROCESSING_VERSIONS),
+        "supported_pipeline_versions": sorted(config.SUPPORTED_PIPELINE_VERSIONS),
+        "supported_prompt_versions": sorted(config.SUPPORTED_PROMPT_VERSIONS),
+        "max_upload_bytes": config.MAX_UPLOAD_BYTES,
     }
 
 
-@app.get("/models")
+def _proxy(service: str, fetch: Callable[[], dict]) -> dict:
+    try:
+        return fetch()
+    except Exception as exc:
+        logger.exception("Could not reach the %s service", service)
+        raise HTTPException(502, _error(
+            f"{service.upper()}_UNAVAILABLE",
+            f"Could not reach the {service} service.", retryable=True)) from exc
+
+
+@app.get("/models", dependencies=authenticated)
 def stt_models() -> dict:
     """The local STT service's model registry."""
-    return _proxy("STT", stt_client.list_models)
+    return _proxy("stt", stt_client.list_models)
 
 
-@app.get("/languages")
+@app.get("/languages", dependencies=authenticated)
 def stt_languages() -> dict:
     """The language codes the local STT service accepts."""
-    return _proxy("STT", stt_client.list_languages)
+    return _proxy("stt", stt_client.list_languages)
 
 
-@app.get("/llm/models")
+@app.get("/llm/models", dependencies=authenticated)
 def llm_models() -> dict:
     """The local LLM service's registry, and which of those accept audio."""
-    return _proxy("LLM", llm_client.list_models)
+    return _proxy("llm", llm_client.list_models)
 
 
-# --- session ---------------------------------------------------------------
-@app.get("/status")
-def status() -> dict:
-    if _session is None:
-        return {"active": False}
-    return {"active": True, **_session.model_dump(mode="json")}
+# --- Running a job ---------------------------------------------------------
+async def read_upload_limited(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read the upload, refusing it the moment it grows too large.
 
-
-@app.post("/session")
-def start_session(request: SessionConfig) -> dict:
-    """Pick the pipeline and models for the runs that follow.
-
-    Nothing has to be configured server-side: credentials can be passed here,
-    or per call in /run. Local STT models are loaded during /run rather than
-    here, since consecutive slots may each need a different one.
+    Checked while streaming rather than after: `await file.read()` on a
+    multi-gigabyte upload has already cost the memory by the time its size
+    could be inspected.
     """
-    global _session
-    _check_reachable(request)
-    _session = request
-    return status()
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(1024 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, _error(
+                "AUDIO_TOO_LARGE", f"Audio exceeds the {max_bytes} byte maximum."))
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
-@app.post("/session/unload")
-def unload_session() -> dict:
-    """Free the local services' models, then drop the session."""
-    global _session
-    model = _session.llm_model if _session else None
-    for release in (stt_client.unload, lambda: llm_client.unload(model)):
-        try:
-            release()
-        except Exception:
-            pass  # best effort: the service may already be down
-    _session = None
-    return {"active": False}
-
-
-def _check_reachable(request: SessionConfig) -> None:
-    """Fail fast on a session that cannot possibly run."""
-    slots = request.active_slots
-    if request.pipeline.uses_stt and not slots:
-        raise HTTPException(
-            400,
-            f"the '{request.pipeline.value}' pipeline needs at least one configured STT slot"
-            + (" — use 'multimodal' if you don't want one"
-               if request.pipeline.uses_audio_llm else ""),
-        )
-    if any(not providers.is_cloud(slot.model) for slot in slots) and not stt_client.health():
-        raise HTTPException(503, f"STT service not reachable at {config.STT_URL}")
-    if not providers.is_cloud(request.llm_model) and not llm_client.health():
-        raise HTTPException(503, f"LLM service not reachable at {config.LLM_URL}")
-
-
-# --- run -------------------------------------------------------------------
-@app.post("/run")
-def run(file: UploadFile = File(...),
-        language: str | None = Form(default=None),
-        llm_api_key: str | None = Form(default=None),
-        llm_base_url: str | None = Form(default=None),
-        stt_slots_json: str | None = Form(default=None)) -> dict:
-    """Run the active pipeline over one recording.
-
-    Every form field except `file` overrides the session's setting for this
-    call only. `stt_slots_json` is a JSON array in the same shape as
-    POST /session's `stt_slots`.
-    """
-    session = _require_session()
-    slots = _slots_for_run(session, stt_slots_json)
-    llm = LlmTarget(
-        model=session.llm_model,
-        api_key=llm_api_key or reveal(session.llm_api_key),
-        base_url=llm_base_url or session.llm_base_url,
-    )
-    result = pipelines.run(
-        session.pipeline, file.file.read(), file.filename or "audio.wav",
-        slots, language or session.language, llm,
-    )
-    return {"pipeline": session.pipeline.value, "result": result}
-
-
-def _slots_for_run(session: SessionConfig,
-                   stt_slots_json: str | None) -> list[SttSlotConfig | None]:
-    if not stt_slots_json:
-        return session.stt_slots or []
+def _parse(model, raw: str, code: str, what: str):
     try:
-        return [SttSlotConfig(**slot) if slot is not None else None
-                for slot in json.loads(stt_slots_json)]
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(400, f"invalid stt_slots_json: {exc}")
+        return model.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise HTTPException(400, _error(code, f"{what} is invalid: {exc}")) from exc
 
 
-# --- evaluation ------------------------------------------------------------
-@app.post("/evaluate")
+@app.post("/internal/jobs/{job_id}/execute",
+          response_model=JobExecutionResponse, dependencies=authenticated)
+async def execute_internal_job(
+    job_id: str,
+    file: UploadFile = File(...),
+    config_json: str = Form(...),
+    credentials_json: str | None = Form(default=None),
+) -> JobExecutionResponse:
+    """Run one recording through one pipeline.
+
+    The job is the caller's; this endpoint neither creates nor stores it.
+    `config_json` is a ProcessingConfig and is safe to keep. `credentials_json`
+    is an ExecutionCredentials, is used for this call only, and is never
+    written anywhere.
+    """
+    processing_config = _parse(ProcessingConfig, config_json,
+                               "INVALID_PROCESSING_CONFIG", "config_json")
+    credentials = (_parse(ExecutionCredentials, credentials_json,
+                          "INVALID_EXECUTION_CREDENTIALS", "credentials_json")
+                   if credentials_json else ExecutionCredentials())
+
+    audio = await read_upload_limited(file, config.MAX_UPLOAD_BYTES)
+
+    try:
+        # Synchronous and CPU/GPU-bound, so it must not block the event loop.
+        result = await run_in_threadpool(
+            execute_job, audio, file.filename or "audio.wav",
+            processing_config, credentials)
+    except AIExecutionError as exc:
+        logger.warning("job %s failed: %s", job_id, exc.error_code)
+        # 503 invites a retry, 422 says the request itself was the problem.
+        raise HTTPException(503 if exc.retryable else 422,
+                            _error(exc.error_code, exc.safe_message, exc.retryable))
+
+    return JobExecutionResponse(
+        job_id=job_id, status="completed",
+        config_hash=calculate_config_hash(processing_config), result=result)
+
+
+@app.post("/internal/admin/models/unload", dependencies=authenticated)
+async def admin_unload_models(llm_model: str | None = Form(default=None)) -> dict:
+    """Free the local services' weights.
+
+    An operational lever, not part of any job's lifecycle -- which is why it
+    sits under /internal/admin rather than being tied to a session that no
+    longer exists. Best effort: a service already down is not an error here.
+    """
+    released = {}
+    for name, release in (("stt", stt_client.unload),
+                          ("llm", lambda: llm_client.unload(llm_model))):
+        try:
+            await run_in_threadpool(release)
+            released[name] = True
+        except Exception:
+            logger.exception("Could not unload the %s model", name)
+            released[name] = False
+    return released
+
+
+# --- Evaluation ------------------------------------------------------------
+@app.post("/evaluate", dependencies=authenticated)
 def evaluate(request: EvaluationRequest) -> dict:
     """Score a transcript against a radiologist-verified reference.
 
@@ -170,18 +214,19 @@ def evaluate(request: EvaluationRequest) -> dict:
     Callers reach it here because the controller is the only entry point --
     the scoring module is never addressed directly.
     """
-    status_code, body = _forward(evaluation_client.evaluate, request.model_dump())
+    try:
+        status_code, body = evaluation_client.evaluate(request.model_dump())
+    except Exception as exc:
+        logger.exception("Could not reach the evaluation service")
+        raise HTTPException(502, _error(
+            "EVALUATION_UNAVAILABLE", "Could not reach the evaluation service.",
+            retryable=True)) from exc
+
     if status_code != 200:
         # Surface the service's own complaint rather than a blanket 502.
-        raise HTTPException(status_code, body.get("detail", body))
+        raise HTTPException(status_code, _error(
+            "EVALUATION_REJECTED", str(body.get("detail", body))))
     return body
-
-
-def _forward(call, payload):
-    try:
-        return call(payload)
-    except Exception as exc:
-        raise HTTPException(502, f"could not reach the evaluation service: {exc}")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,10 @@ LLM, choose or record a recording, run it, and save the report.
 
     python app.py
 
-The controller must be running (default localhost:9002).
+The controller must be running (default localhost:9002) and its internal token
+entered in the connection bar -- the controller is stateless and authenticates
+every call, so there is no session to start and nothing to configure ahead of
+time. Each Run sends the whole configuration with the recording.
 """
 import json
 import threading
@@ -20,6 +23,9 @@ from config import (
     GEMINI_HINT,
     MAX_STT_SLOTS,
     PIPELINE_LABELS,
+    PIPELINE_VERSION,
+    PREPROCESSING_VERSION,
+    PROMPT_VERSION,
 )
 from export import TranscriptSaver
 from widgets import ConnectionBar, CloudFields, ModeSelector, OutputBox, ScrollableFrame, SttSlotWidget
@@ -32,7 +38,8 @@ class App(tk.Tk):
         self.geometry("880x760")
         self.minsize(700, 500)
 
-        self.client = BuAliClient(lambda: self.connection.base_url)
+        self.client = BuAliClient(lambda: self.connection.base_url,
+                                  lambda: self.connection.token.get().strip())
         self._audio_path: str | None = None
         self._report: dict = {}
         self._local_stt_models: list[str] = []
@@ -70,12 +77,12 @@ class App(tk.Tk):
 
         self._build_llm_section(root)
 
-        ttk.Button(root, text="Start session", command=self.start_session).grid(
+        ttk.Button(root, text="Check settings", command=self.check_settings).grid(
             row=4, column=0, sticky="w", pady=10)
-        ttk.Button(root, text="Unload session", command=self.unload_session).grid(
+        ttk.Button(root, text="Unload models", command=self.unload_models).grid(
             row=4, column=1, sticky="w")
-        self.session_status = ttk.Label(root, text="session: none")
-        self.session_status.grid(row=5, column=0, columnspan=4, sticky="w")
+        self.settings_status = ttk.Label(root, text="settings: not checked")
+        self.settings_status.grid(row=5, column=0, columnspan=4, sticky="w")
 
         ttk.Label(root, text="Audio file:").grid(row=6, column=0, sticky="w", pady=(10, 0))
         self.audio_path = tk.StringVar()
@@ -193,33 +200,74 @@ class App(tk.Tk):
                       on_error=lambda detail: messagebox.showerror(
                           "BuAli", f"Could not fetch models: {detail}"))
 
-    def start_session(self):
+    def build_job(self) -> tuple[dict, dict]:
+        """Split what the user chose into the two halves the controller wants.
+
+        `processing_config` is storable and gets hashed into the result;
+        `credentials` carries the API keys and is used for this call only.
+        """
+        pipeline = self.pipeline
+        processing_config = {
+            "pipeline": pipeline,
+            "language": "fa",
+            "llm_model": self.llm_model,
+            "stt_slots": [],
+            "preprocessing_version": PREPROCESSING_VERSION,
+            "pipeline_version": PIPELINE_VERSION,
+            "prompt_version": PROMPT_VERSION,
+        }
+        credentials: dict = {}
+
+        if pipeline != "multimodal":
+            stt_credentials = {}
+            for index, slot in enumerate(self.slots, start=1):
+                slot_id = f"stt_{index}"
+                processing_config["stt_slots"].append(slot.as_slot_config(slot_id))
+                credential = slot.as_credential()
+                if credential:
+                    stt_credentials[slot_id] = credential
+            if stt_credentials:
+                credentials["stt"] = stt_credentials
+
+        if self.llm_mode.is_cloud():
+            llm_credential = self.llm_cloud.credentials()
+            if llm_credential:
+                credentials["llm"] = llm_credential
+
+        return processing_config, credentials
+
+    def check_settings(self):
+        """Validate locally, before spending a run on an obvious mistake.
+
+        Nothing is sent: the controller is stateless, so there is nothing to
+        register ahead of time.
+        """
         if not self.llm_model.strip(":"):
-            messagebox.showwarning(
-                "BuAli",
-                "No LLM model selected. Local models are listed from the controller — "
-                "check the connection and press Refresh, or switch to a cloud model.")
+            self.settings_status.config(
+                text="settings: no LLM model — check the connection and press Refresh, "
+                     "or switch to a cloud model")
             return
 
-        payload = {"pipeline": self.pipeline, "llm_model": self.llm_model}
-        if self.pipeline != "multimodal":
-            payload["stt_slots"] = [slot.as_slot_config() for slot in self.slots]
-        if self.llm_mode.is_cloud():
-            payload.update({f"llm_{key}": value
-                            for key, value in self.llm_cloud.credentials().items()})
+        processing_config, _ = self.build_job()
+        configured = [slot for slot in processing_config["stt_slots"] if slot]
+        if self.pipeline != "multimodal" and not configured:
+            self.settings_status.config(
+                text=f"settings: the {self.pipeline} pipeline needs at least one STT slot")
+            return
+        if not self.connection.token.get().strip():
+            self.settings_status.config(text="settings: enter the controller's internal token")
+            return
 
-        self.session_status.config(text="starting session...")
-        self.in_background(
-            lambda: self.client.start_session(payload),
-            on_success=lambda body: self.session_status.config(
-                text=f"session: pipeline={body.get('pipeline')}, llm={body.get('llm_model')}"),
-            on_error=lambda detail: self.session_status.config(text=f"session failed: {detail}"),
-        )
+        self.settings_status.config(
+            text=f"settings ok: pipeline={self.pipeline}, llm={self.llm_model}, "
+                 f"stt slots={len(configured)}")
 
-    def unload_session(self):
+    def unload_models(self):
+        """Free the local services' weights. Unrelated to any job."""
         self.in_background(
-            self.client.unload_session,
-            on_success=lambda _: self.session_status.config(text="session: none"),
+            lambda: self.client.unload_models(
+                None if self.llm_mode.is_cloud() else self.llm_model),
+            on_success=lambda body: self.settings_status.config(text=f"unloaded: {body}"),
             on_error=lambda detail: messagebox.showerror("BuAli", f"Unload failed: {detail}"),
         )
 
@@ -233,12 +281,13 @@ class App(tk.Tk):
         if not path:
             messagebox.showwarning("BuAli", "Choose or record an audio file first.")
             return
+        if not self.connection.token.get().strip():
+            messagebox.showwarning("BuAli", "Enter the controller's internal token first.")
+            return
+
         self._audio_path = path
         self.saver.suggest_dir_from(path)
-
-        overrides = ({f"llm_{key}": value
-                      for key, value in self.llm_cloud.credentials().items()}
-                     if self.llm_mode.is_cloud() else {})
+        processing_config, credentials = self.build_job()
 
         self.output.write("running...")
 
@@ -246,8 +295,10 @@ class App(tk.Tk):
             self._report = body.get("result", {})
             self.output.write(json.dumps(body, indent=2, ensure_ascii=False))
 
-        self.in_background(lambda: self.client.run(path, overrides), on_success=show,
-                      on_error=lambda detail: self.output.write(f"Error: {detail}"))
+        self.in_background(
+            lambda: self.client.execute(path, processing_config, credentials),
+            on_success=show,
+            on_error=lambda detail: self.output.write(f"Error: {detail}"))
 
     def _report_for_saving(self):
         text = self._report.get("final_text") or self._report.get("corrected_transcript") or ""

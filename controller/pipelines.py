@@ -16,24 +16,26 @@ import llm_client
 import prompts
 import providers
 import stt_client
-from schemas import LlmTarget, Pipeline, SttSlotConfig
+from schemas import LlmTarget, Pipeline, RuntimeSttSlotConfig
 
 
 def run(pipeline: Pipeline, audio: bytes, filename: str,
-        slots: list[SttSlotConfig | None], language: str | None,
+        slots: list[RuntimeSttSlotConfig | None], language: str | None,
         llm: LlmTarget) -> dict:
     """Run `pipeline` over one recording and return the filled-in report.
 
     The result is the LLM's JSON output, with each STT slot's raw transcript
     merged in alongside it under `transcript_1`..`transcript_N`.
     """
-    transcripts = _transcribe_slots(audio, slots, language) if pipeline.uses_stt else {}
+    transcripts = (_transcribe_slots(audio, filename, slots, language)
+                   if pipeline.uses_stt else {})
     if pipeline.uses_audio_llm:
         return _report_from_audio(audio, filename, transcripts, llm)
     return _reconcile(transcripts, llm)
 
 
-def _transcribe_slots(audio: bytes, slots: list[SttSlotConfig | None],
+def _transcribe_slots(audio: bytes, filename: str,
+                      slots: list[RuntimeSttSlotConfig | None],
                       language: str | None) -> dict[str, str]:
     """Transcribe with every configured slot, skipping the unused ones.
 
@@ -45,7 +47,8 @@ def _transcribe_slots(audio: bytes, slots: list[SttSlotConfig | None],
         if slot is None:
             continue
         try:
-            transcripts[f"transcript_{position}"] = stt_client.transcribe(audio, slot, language)
+            transcripts[f"transcript_{position}"] = stt_client.transcribe(
+                audio, slot, language, filename)
         except Exception as exc:
             raise HTTPException(502, f"STT slot {position} ('{slot.model}') failed: {exc}")
     return transcripts

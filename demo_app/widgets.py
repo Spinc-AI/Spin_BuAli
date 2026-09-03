@@ -100,14 +100,29 @@ class SttSlotWidget(ttk.Frame):
             self.local_box.grid(row=1, column=0, sticky="w", pady=(4, 0))
             self.refresh_button.grid(row=1, column=1, sticky="w", padx=(4, 0), pady=(4, 0))
 
-    def as_slot_config(self) -> dict | None:
-        """This slot as the controller's `stt_slots` entry, or None if unused."""
+    def as_slot_config(self, slot_id: str) -> dict | None:
+        """This slot as a ProcessingConfig entry, or None if unused.
+
+        Deliberately without the API key: configuration is storable and
+        hashable, credentials are not. `as_credential` returns that half.
+        """
         if not self.enabled.get():
             return None
+        config = {"slot_id": slot_id}
         if self.mode.is_cloud():
-            return {"model": "openai:" + self.cloud.model.get().strip(),
-                    **self.cloud.credentials()}
-        return {"model": self.local_model.get().strip()}
+            config["model"] = "openai:" + self.cloud.model.get().strip()
+            base_url = self.cloud.base_url.get().strip()
+            if base_url:
+                config["base_url"] = base_url
+        else:
+            config["model"] = self.local_model.get().strip()
+        return config
+
+    def as_credential(self) -> dict | None:
+        """This slot's secret, sent per request and never stored."""
+        if not self.enabled.get() or not self.mode.is_cloud():
+            return None
+        return self.cloud.credentials() or None
 
 
 class ConnectionBar(ttk.Frame):
@@ -127,6 +142,13 @@ class ConnectionBar(ttk.Frame):
                                                                         padx=(0, 8))
         self._indicator = ttk.Label(self, text="● unknown", foreground="gray")
         self._indicator.grid(row=0, column=5)
+
+        # Every route but the health check needs this. Shown masked, and never
+        # written anywhere -- it lives only in this field.
+        ttk.Label(self, text="Token:").grid(row=1, column=0, padx=(0, 4), pady=(6, 0))
+        self.token = tk.StringVar()
+        ttk.Entry(self, textvariable=self.token, width=34, show="*").grid(
+            row=1, column=1, columnspan=3, sticky="w", pady=(6, 0))
 
     @property
     def base_url(self) -> str:

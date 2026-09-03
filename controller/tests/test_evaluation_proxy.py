@@ -66,7 +66,13 @@ class TestErrors:
         evaluation_service["reply"]["body"] = {"detail": "reference must not be empty"}
         response = client.post("/evaluate", json=body())
         assert response.status_code == 422
-        assert response.json()["detail"] == "reference must not be empty"
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "EVALUATION_REJECTED"
+        assert "reference must not be empty" in detail["message"]
+
+    def test_evaluate_needs_a_token(self, client):
+        client.headers.pop("X-Internal-Token")
+        assert client.post("/evaluate", json=body()).status_code == 401
 
     def test_unreachable_service_is_a_bad_gateway(self, client, monkeypatch):
         def boom(payload):
@@ -75,7 +81,9 @@ class TestErrors:
         monkeypatch.setattr(evaluation_client, "evaluate", boom)
         response = client.post("/evaluate", json=body())
         assert response.status_code == 502
-        assert "evaluation service" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "EVALUATION_UNAVAILABLE"
+        assert detail["retryable"] is True, "the service may simply be restarting"
 
 
 class TestHealth:

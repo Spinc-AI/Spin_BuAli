@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 import pipelines
 import prompts
-from schemas import LlmTarget, Pipeline, SttSlotConfig
+from schemas import LlmTarget, Pipeline, RuntimeSttSlotConfig
 
 LLM = LlmTarget(model="gemini:gemini-2.5-pro")
 AUDIO = b"fake-audio-bytes"
@@ -12,7 +12,8 @@ AUDIO = b"fake-audio-bytes"
 
 def slots(*models):
     """Slot list from model names; None leaves that slot unconfigured."""
-    return [SttSlotConfig(model=m) if m else None for m in models]
+    return [RuntimeSttSlotConfig(slot_id=f"stt_{i}", model=m) if m else None
+            for i, m in enumerate(models, start=1)]
 
 
 class TestSeparate:

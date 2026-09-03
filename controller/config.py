@@ -29,3 +29,28 @@ GEMINI_BASE_URL = os.getenv(
 ).rstrip("/")
 
 MAX_STT_SLOTS = 3
+
+# --- Backend -> controller authentication ---
+# Every route except GET / requires this in an X-Internal-Token header. Empty
+# means the controller refuses work rather than accepting it unauthenticated:
+# a missing secret is a deployment mistake, not permission to skip the check.
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
+
+# Largest audio upload accepted. Enforced while reading the stream, so an
+# oversized file is refused before it is held in memory, not after.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+
+
+# --- Version pinning -------------------------------------------------------
+# A job declares which preprocessing, pipeline and prompt it expects, and the
+# controller refuses anything it does not implement. Without this a result
+# cannot be traced back to the code that produced it: the same request would
+# quietly mean something different after a deploy.
+def _version_set(name: str, default: str) -> set[str]:
+    return {value.strip() for value in os.getenv(name, default).split(",") if value.strip()}
+
+
+SUPPORTED_PREPROCESSING_VERSIONS = _version_set(
+    "SUPPORTED_PREPROCESSING_VERSIONS", "legacy-v1")
+SUPPORTED_PIPELINE_VERSIONS = _version_set("SUPPORTED_PIPELINE_VERSIONS", "buali-v1")
+SUPPORTED_PROMPT_VERSIONS = _version_set("SUPPORTED_PROMPT_VERSIONS", "radiology-v1")

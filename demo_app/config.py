@@ -28,6 +28,13 @@ PIPELINE_LABELS = {
     "Hybrid (STT + Multimodal LLM)": "hybrid",
 }
 
+# The versions this client declares on every job. They must be among the
+# controller's SUPPORTED_*_VERSIONS or the job is refused -- which is the point:
+# a result can always be traced to the implementation that produced it.
+PREPROCESSING_VERSION = "legacy-v1"
+PIPELINE_VERSION = "buali-v1"
+PROMPT_VERSION = "radiology-v1"
+
 GEMINI_HINT = (
     'Multimodal/Hybrid: prefix the cloud model with "gemini:" to use Gemini\'s native audio '
     "API (e.g. gemini:gemini-2.5-pro) instead of the OpenAI-compatible shape."

@@ -60,7 +60,7 @@ class TestRunOne:
             devices=["cpu"], model_factory=factory,
             llm_factory=lambda key, **kw: FakeLLM("a 6 mm stone in the right kidney"),
             results_dir=tmp_path)
-        assert (tmp_path / "results__whisper__fake-llm__separate.csv").is_file()
+        assert (tmp_path / "results__whisper__fake-llm__separate__fixed.csv").is_file()
         assert len(frame) == len(items) + 1  # one row per clip, plus SUMMARY
 
     def test_the_summary_row_is_last_and_named_summary(self, items, factory, tmp_path):
@@ -106,7 +106,7 @@ class TestRunOne:
             "whisper", "fake-llm", "separate", items, devices=["cpu"],
             model_factory=factory, llm_factory=lambda key, **kw: FakeLLM(fail=True),
             results_dir=tmp_path)
-        assert (tmp_path / "results__whisper__fake-llm__separate.csv").is_file()
+        assert (tmp_path / "results__whisper__fake-llm__separate__fixed.csv").is_file()
         per_clip = frame[frame["asset_id"] != "SUMMARY"]
         assert (per_clip["transcription_error"].fillna("") != "").all()
 
@@ -150,3 +150,35 @@ class TestBuildMaster:
 
     def test_nothing_to_merge_does_not_crash(self, tmp_path):
         assert runner.build_master(tmp_path) is None
+
+
+class TestPreprocessingReachesTheSTTStage:
+    def test_it_is_threaded_into_transcribe_batch(self, items, tmp_path, monkeypatch):
+        """The bug this pins: run_one accepted no preprocessing argument at
+        all, so every run silently used fixed windowing regardless of what a
+        caller asked for."""
+        seen = {}
+        real = transcribe.transcribe_batch
+
+        def spy(*args, **kwargs):
+            seen["preprocessing"] = kwargs.get("preprocessing")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(runner.transcribe, "transcribe_batch", spy)
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive-vad",
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert seen["preprocessing"] == "adaptive-vad"
+
+    def test_it_is_stamped_on_every_row_and_the_default_label(self, items, factory, tmp_path):
+        frame = runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                               model_factory=factory, preprocessing="uniform",
+                               llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert set(frame["preprocessing"]) == {"uniform"}
+        assert (tmp_path / "results__whisper__fake-llm__separate__uniform.csv").is_file()
+
+    def test_no_preprocessing_given_labels_itself_fixed(self, items, factory, tmp_path):
+        frame = runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                               model_factory=factory,
+                               llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert set(frame["preprocessing"]) == {"fixed"}

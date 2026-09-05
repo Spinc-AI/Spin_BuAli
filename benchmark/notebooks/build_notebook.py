@@ -289,6 +289,13 @@ PIPELINE = "separate"          # separate | multimodal | hybrid
 LANGUAGE = "fa"
 DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other free
 
+# How the recording is windowed before it reaches the STT model. adaptive
+# listens to the audio and snaps cuts to quiet moments; the -vad variants
+# chunk within detected speech regions so a long pause becomes a boundary
+# instead of something a window spends itself on. None means fixed windows.
+PREPROCESSING = "adaptive"     # None | "fixed" | "uniform" | "adaptive" | "adaptive-vad"
+print("preprocessing options:", {**plan.PREPROCESSING, None: "fixed windows, no chunking module"})
+
 STRUCTURE_GUIDE = report_structure.GUIDE   # or None to score the bare controller prompt
 
 _placement = next(p for p in placements if p.model == LLM_KEY)
@@ -326,8 +333,8 @@ for index, stt_key in enumerate(
 df_{index:02d} = runner.run_one(
     "{stt_key}", LLM_KEY, PIPELINE, clips,
     language=LANGUAGE, devices=DEVICES, precision=PRECISION, cards=CARDS,
-    structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
-    label="{index:02d}_{stt_key}__" + LLM_KEY + "__" + PIPELINE,
+    preprocessing=PREPROCESSING, structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
+    label="{index:02d}_{stt_key}__" + LLM_KEY + "__" + PIPELINE + "__" + str(PREPROCESSING),
 )
 df_{index:02d}[df_{index:02d}["asset_id"] != "SUMMARY"][
     ["asset_id", "wer", "medical_term_f1", "negation_errors",

@@ -159,6 +159,12 @@ class TestItIsActuallyConnected:
                 source = source.replace("results_dir=RESULTS_DIR,",
                                         "results_dir=RESULTS_DIR, **__kw,")
             exec(compile(source, "<cell>", "exec"), namespace)
+            if "RESULTS_DIR = pathlib.Path(" in source:
+                # The config cell hardcodes /kaggle/working/results, which on
+                # this machine resolves to a real, persistent path outside the
+                # test sandbox. Redirect it the moment it is set, before any
+                # run cell can write through it.
+                namespace["RESULTS_DIR"] = tmp_path / "results"
 
         results_dir = pathlib.Path(str(namespace["RESULTS_DIR"]))
         per_run_csvs = sorted(results_dir.glob("results__*.csv"))

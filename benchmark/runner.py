@@ -61,12 +61,17 @@ def _reset_vram():
 def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
             language: str = "fa", label: str | None = None,
             precision: str = "fp16", cards: int = 1, devices=None,
-            structure_guide: str | None = None, terms=None,
-            results_dir=None, model_factory=None, llm_factory=None):
+            preprocessing: str | None = None, structure_guide: str | None = None,
+            terms=None, results_dir=None, model_factory=None, llm_factory=None):
     """Run exactly one (stt, llm, pipeline) configuration end to end.
 
     `stt_key=None` is `multimodal`: no transcription stage, the LLM hears the
     recording. Every other pipeline needs at least one STT engine.
+
+    `preprocessing` selects how the recording is windowed before it reaches
+    the STT model -- one of `plan.PREPROCESSING`'s four keys, or `None` for
+    fixed-length windows. It only matters when `stt_key` is given; a
+    `multimodal` run hears the whole recording and has no windowing stage.
 
     Returns the per-clip DataFrame (with a trailing SUMMARY row) and also
     writes it to `results_dir/results__<label>.csv` -- the write happens
@@ -77,7 +82,8 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
 
     results_dir = Path(results_dir or settings.OUT_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
-    label = label or f"{stt_key or 'multimodal'}__{llm_key}__{pipeline_name}"
+    prep_label = preprocessing or "fixed"
+    label = label or f"{stt_key or 'multimodal'}__{llm_key}__{pipeline_name}__{prep_label}"
     terms = terms or bridge.ClinicalTerms()
 
     print(f"\n{'=' * 70}\n  RUN  {label}\n{'=' * 70}")
@@ -91,7 +97,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
         print(f"[stt] {stt_key}")
         stt_run = transcribe.transcribe_batch(
             stt_key, items, devices=devices, language=language,
-            model_factory=model_factory,
+            model_factory=model_factory, preprocessing=preprocessing,
             on_progress=lambda t: print(
                 f"    {t.asset_id:14} {t.real_time_factor:6.2f}x real-time"
                 + (f"   ERROR: {t.error}" if t.error else "")))
@@ -125,7 +131,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     rows = leaderboard.per_report_rows(results)
     for row in rows:
         row.update(stt_model=stt_key or "(none)", llm_model=llm_key,
-                   pipeline=pipeline_name, precision=precision)
+                   pipeline=pipeline_name, precision=precision, preprocessing=prep_label)
 
     frame = pd.DataFrame(rows)
     elapsed = time.perf_counter() - started
@@ -133,7 +139,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
         summary_row = leaderboard.rows(summary)[0]
         summary_row.update(
             asset_id="SUMMARY", stt_model=stt_key or "(none)", llm_model=llm_key,
-            pipeline=pipeline_name, precision=precision,
+            pipeline=pipeline_name, precision=precision, preprocessing=prep_label,
             stt_load_seconds=round(stt_run.load_seconds, 1) if stt_run else 0.0,
             llm_load_seconds=round(load_seconds, 1),
             peak_vram_gb=round(peak_vram, 2),

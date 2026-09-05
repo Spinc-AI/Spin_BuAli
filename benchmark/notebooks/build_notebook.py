@@ -22,7 +22,7 @@ there, because there is no loop.
 import json
 import pathlib
 
-REPO_URL = "https://github.com/parsafaramarzi/Spin_BuAli.git"
+REPO_URL = "https://github.com/Spinc-AI/Spin_BuAli.git"
 BRANCH = "benchmark-selfcontained"
 
 cells = []

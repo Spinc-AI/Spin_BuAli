@@ -202,3 +202,11 @@ class TestModelSelection:
         model = llm_module.dry_run_factory({}).load()
         reply = json.loads(model.generate("system", "the transcript"))
         assert reply["final_text"] == "the transcript"
+
+    def test_the_dry_run_factory_accepts_either_calling_convention(self):
+        """session.py calls a factory as factory(run_dict); runner.run_one
+        calls one as factory(llm_key, precision=..., cards=...), matching
+        build()'s own signature. Both must work without a TypeError."""
+        llm_module.dry_run_factory({"llm_model": "x"})            # session.py's shape
+        llm_module.dry_run_factory("aya-expanse-8b",               # runner.py's shape
+                                   precision="fp16", cards=2)

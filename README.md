@@ -38,17 +38,17 @@ credentials, and nothing is kept between them.
 | [`controller/`](controller/README.md) | BuAli's brain: the three pipelines, prompts, auth | `9002` |
 | [`preprocessing/`](preprocessing/README.md) | Audio validation, standardization, VAD and chunking | — |
 | [`demo_app/`](demo_app/README.md) | Tkinter desktop client for manual testing | — |
-| [`benchmark/`](benchmark/README.md) | A self-contained Kaggle notebook ranking STT models | — |
+| [`benchmark/`](benchmark/README.md) | STT + LLM pipeline benchmark, run from a Kaggle notebook | — |
 | [`docs/`](docs/README.md) | Roadmap and reference documents | — |
 
 Each service folder is independently deployable: its own `requirements.txt`,
 its own `config.py`, and no direct imports from any other module. Moving one to
 a different machine means changing a URL and nothing else.
 
-`benchmark/` is not a service at all: it is a single Kaggle notebook, with no
-port and never in the request path. It embeds `evaluation/`'s metric code
-verbatim so a model comparison is scored by exactly what runs in production —
-see [its README](benchmark/README.md#about-the-code-in-section-2).
+`benchmark/` is not a service at all: it has no port and is never in the
+request path. Its Kaggle notebook clones this repo and imports `evaluation/`'s
+real metric code directly, so a model comparison is scored by exactly what
+runs in production — see [its README](benchmark/README.md).
 
 ## Quick start
 

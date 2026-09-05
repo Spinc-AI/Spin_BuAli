@@ -244,5 +244,12 @@ class EchoLLM:
                            "final_text": text, "discrepancies_found": [], "notes": None})
 
 
-def dry_run_factory(run: dict):
+def dry_run_factory(*args, **kwargs):
+    """A stand-in `llm_factory`, under either calling convention in this repo.
+
+    `session.py` calls a factory as `factory(run_dict)`; `runner.run_one` calls
+    one as `factory(llm_key, precision=..., cards=...)`, matching `build`'s own
+    signature. The stub answers the same way regardless of what it was asked
+    for, so `*args, **kwargs` rather than a signature tied to one caller.
+    """
     return EchoLLM()

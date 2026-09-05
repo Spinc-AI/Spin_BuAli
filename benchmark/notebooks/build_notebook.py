@@ -317,6 +317,14 @@ document's own rank order. Each is its own cell.
 `multimodal`) and `label`. **To try a different LLM or pipeline:** change
 `LLM_KEY` / `PIPELINE` in the cell above and re-run — no cell below needs
 editing, since they all read those variables.
+
+**Speech recognition is cached.** Changing `LLM_KEY` and re-running these five
+cells does not re-transcribe anything — the cache key is `(preprocessing,
+stt_key)` only, so it does not care which LLM or pipeline asked for it. A cell
+that reused a cached transcript prints `-- cached, skipping transcription` and
+its CSV's `stt_cached` column is `True`. The cache lives in
+`RESULTS_DIR/transcripts/`; delete a file there to force that one pair to be
+redone, or pass `use_cache=False` to force every call in a cell to redo it.
 """)
 
 for index, stt_key in enumerate(

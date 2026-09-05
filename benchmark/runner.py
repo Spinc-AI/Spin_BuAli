@@ -16,7 +16,16 @@ Everything it does is a call into an already-tested module:
     leaderboard.per_report_rows / rows -- flattening a score into a CSV row
 
 `run_one` only wires them together and writes the file.
+
+Speech recognition is cached across calls, keyed on `(preprocessing, stt_key)`
+alone -- not the LLM, not the pipeline. Trying five language models against
+one STT engine costs one transcription and five LLM passes, because the
+transcript is identical in all five; only the STT stage produces it. The cache
+lives on disk as one JSON file per pair, so it survives across cells in the
+same session and, if `results_dir` is a Kaggle Dataset re-attached next
+session, across sessions too.
 """
+import json
 import time
 from pathlib import Path
 
@@ -58,11 +67,43 @@ def _reset_vram():
             torch.cuda.reset_peak_memory_stats(f"cuda:{i}")
 
 
+def _transcript_cache_path(results_dir: Path, prep_label: str, stt_key: str) -> Path:
+    cache_dir = results_dir / "transcripts"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{prep_label}__{stt_key}.json"
+
+
+def _load_cached_transcripts(cache_path: Path, asset_ids: set[str]) -> dict | None:
+    """The cached `{asset_id: text}` map, or `None` if it does not cover every
+    recording this call needs.
+
+    A partial hit -- someone widened the dataset since the cache was written,
+    say -- is treated as a miss rather than silently scoring the new
+    recordings against nothing: this only ever saves time, never correctness.
+    """
+    if not cache_path.is_file():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not asset_ids <= set(cached):
+        return None
+    return cached
+
+
+def _save_transcripts(cache_path: Path, transcripts_by_asset: dict) -> None:
+    flat = {asset_id: slots.get("transcript_1", "")
+           for asset_id, slots in transcripts_by_asset.items()}
+    cache_path.write_text(json.dumps(flat, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
             language: str = "fa", label: str | None = None,
             precision: str = "fp16", cards: int = 1, devices=None,
             preprocessing: str | None = None, structure_guide: str | None = None,
-            terms=None, results_dir=None, model_factory=None, llm_factory=None):
+            terms=None, results_dir=None, model_factory=None, llm_factory=None,
+            use_cache: bool = True):
     """Run exactly one (stt, llm, pipeline) configuration end to end.
 
     `stt_key=None` is `multimodal`: no transcription stage, the LLM hears the
@@ -72,6 +113,14 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     the STT model -- one of `plan.PREPROCESSING`'s four keys, or `None` for
     fixed-length windows. It only matters when `stt_key` is given; a
     `multimodal` run hears the whole recording and has no windowing stage.
+
+    `use_cache` reuses a transcript already produced by an earlier call with
+    the same `(preprocessing, stt_key)` pair, regardless of which LLM or
+    pipeline that call used -- the transcript is identical either way, only
+    the STT stage produces it. Set to `False` to force a fresh transcription,
+    which is also what happens automatically when `model_factory` is given: a
+    caller supplying a stub wants it exercised, not skipped by a stale cache
+    from a real run.
 
     Returns the per-clip DataFrame (with a trailing SUMMARY row) and also
     writes it to `results_dir/results__<label>.csv` -- the write happens
@@ -93,16 +142,34 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     # --- STT stage -----------------------------------------------------
     transcripts_by_asset = {item.asset_id: {} for item in items}
     stt_run = None
+    stt_cached = False
     if stt_key:
-        print(f"[stt] {stt_key}")
-        stt_run = transcribe.transcribe_batch(
-            stt_key, items, devices=devices, language=language,
-            model_factory=model_factory, preprocessing=preprocessing,
-            on_progress=lambda t: print(
-                f"    {t.asset_id:14} {t.real_time_factor:6.2f}x real-time"
-                + (f"   ERROR: {t.error}" if t.error else "")))
-        for entry in stt_run.transcripts:
-            transcripts_by_asset[entry.asset_id]["transcript_1"] = entry.text
+        cache_path = _transcript_cache_path(results_dir, prep_label, stt_key)
+        cached = (_load_cached_transcripts(cache_path, {item.asset_id for item in items})
+                  if use_cache and not model_factory else None)
+
+        if cached is not None:
+            stt_cached = True
+            print(f"[stt] {stt_key} ({prep_label}) -- cached, skipping transcription")
+            for item in items:
+                transcripts_by_asset[item.asset_id]["transcript_1"] = cached[item.asset_id]
+        else:
+            print(f"[stt] {stt_key} ({prep_label})")
+            stt_run = transcribe.transcribe_batch(
+                stt_key, items, devices=devices, language=language,
+                model_factory=model_factory, preprocessing=preprocessing,
+                on_progress=lambda t: print(
+                    f"    {t.asset_id:14} {t.real_time_factor:6.2f}x real-time"
+                    + (f"   ERROR: {t.error}" if t.error else "")))
+            for entry in stt_run.transcripts:
+                transcripts_by_asset[entry.asset_id]["transcript_1"] = entry.text
+            failed = any(entry.error for entry in stt_run.transcripts)
+            if use_cache and not failed:
+                # Written even when model_factory is a stub, matching the
+                # asymmetry on the read side: only the read is gated on
+                # "no override given" (below), so a stub's output is never
+                # mistaken for a real transcript by a later, un-stubbed call.
+                _save_transcripts(cache_path, transcripts_by_asset)
     elif pipeline_name == "separate":
         raise ValueError("separate needs an STT model; pass stt_key")
 
@@ -131,7 +198,8 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     rows = leaderboard.per_report_rows(results)
     for row in rows:
         row.update(stt_model=stt_key or "(none)", llm_model=llm_key,
-                   pipeline=pipeline_name, precision=precision, preprocessing=prep_label)
+                   pipeline=pipeline_name, precision=precision, preprocessing=prep_label,
+                   stt_cached=stt_cached)
 
     frame = pd.DataFrame(rows)
     elapsed = time.perf_counter() - started
@@ -140,6 +208,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
         summary_row.update(
             asset_id="SUMMARY", stt_model=stt_key or "(none)", llm_model=llm_key,
             pipeline=pipeline_name, precision=precision, preprocessing=prep_label,
+            stt_cached=stt_cached,
             stt_load_seconds=round(stt_run.load_seconds, 1) if stt_run else 0.0,
             llm_load_seconds=round(load_seconds, 1),
             peak_vram_gb=round(peak_vram, 2),
@@ -168,6 +237,8 @@ def _print_summary(label, frame, csv_path, elapsed_seconds):
         print(f"  Number error rate   : {s.get('number_error_rate', float('nan')):.4f}")
         print(f"  Review rate         : {s.get('review_rate', float('nan')):.1%}")
         print(f"  Peak VRAM           : {s.get('peak_vram_gb', 0):.2f} GB")
+        if bool(s.get("stt_cached")):
+            print(f"  STT stage           : cached -- no transcription this run")
     print(f"  Wall time           : {elapsed_seconds:.1f}s")
     print(f"  Saved -> {csv_path}")
     print(f"{'-' * 70}")

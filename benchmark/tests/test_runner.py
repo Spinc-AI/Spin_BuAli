@@ -12,6 +12,7 @@ import llm as llm_module
 import plan as plan_module
 import runner
 import transcribe
+from conftest import FakeModel
 
 
 class FakeLLM:
@@ -182,3 +183,132 @@ class TestPreprocessingReachesTheSTTStage:
                                model_factory=factory,
                                llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
         assert set(frame["preprocessing"]) == {"fixed"}
+
+
+class TestTranscriptCaching:
+    """Speech recognition is the expensive stage and does not change when the
+    LLM or the pipeline does, so a second run against the same (preprocessing,
+    stt_key) pair should not repeat it. What matters here: the cache key
+    excludes the LLM and the pipeline, a cache hit never touches transcribe(),
+    a failed transcription is never cached, and a caller can always force a
+    fresh run."""
+
+    def _asset_ids(self, items):
+        return {item.asset_id for item in items}
+
+    def test_the_cache_round_trips_through_disk(self, tmp_path):
+        path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        runner._save_transcripts(path, {"A1": {"transcript_1": "hello"},
+                                        "A2": {"transcript_1": "world"}})
+        loaded = runner._load_cached_transcripts(path, {"A1", "A2"})
+        assert loaded == {"A1": "hello", "A2": "world"}
+
+    def test_a_cache_missing_a_needed_asset_is_treated_as_a_miss(self, tmp_path):
+        """Widening the dataset after the cache was written must not silently
+        score the new recordings against nothing."""
+        path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        runner._save_transcripts(path, {"A1": {"transcript_1": "hello"}})
+        assert runner._load_cached_transcripts(path, {"A1", "A2"}) is None
+
+    def test_no_cache_file_is_a_miss_not_an_error(self, tmp_path):
+        path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        assert runner._load_cached_transcripts(path, {"A1"}) is None
+
+    def test_a_corrupt_cache_file_is_a_miss_not_a_crash(self, tmp_path):
+        path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        assert runner._load_cached_transcripts(path, {"A1"}) is None
+
+    def test_a_pre_seeded_cache_is_used_without_calling_transcribe_batch(
+            self, items, tmp_path, monkeypatch):
+        """The cache hit has to short-circuit *before* transcribe_batch, not
+        just skip using its result -- transcribe_batch is what would try to
+        load real STT weights."""
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        runner._save_transcripts(cache_path, {
+            item.asset_id: {"transcript_1": f"cached text for {item.asset_id}"}
+            for item in items})
+
+        def explode(*args, **kwargs):
+            raise AssertionError("transcribe_batch must not be called on a cache hit")
+
+        monkeypatch.setattr(runner.transcribe, "transcribe_batch", explode)
+        frame = runner.run_one(
+            "whisper", "fake-llm", "separate", items, preprocessing="adaptive",
+            llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert set(frame["stt_cached"]) == {True}
+
+    def test_a_fresh_run_writes_the_cache(self, items, factory, tmp_path):
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=factory,
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        assert cache_path.is_file()
+        cached = runner._load_cached_transcripts(cache_path, self._asset_ids(items))
+        assert cached is not None
+
+    def test_a_model_factory_always_bypasses_reading_the_cache(self, items, factory, tmp_path):
+        """An override is there to be exercised, not silently skipped by
+        whatever a previous real run happened to produce."""
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        runner._save_transcripts(cache_path, {
+            item.asset_id: {"transcript_1": "stale cached text"} for item in items})
+
+        frame = runner.run_one(
+            "whisper", "fake-llm", "separate", items, devices=["cpu"],
+            preprocessing="adaptive", model_factory=factory,
+            llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert set(frame["stt_cached"]) == {False}
+
+    def test_use_cache_false_also_bypasses_a_present_cache(self, items, factory, tmp_path,
+                                                            monkeypatch):
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        runner._save_transcripts(cache_path, {
+            item.asset_id: {"transcript_1": "stale"} for item in items})
+
+        calls = []
+        monkeypatch.setattr(runner, "_load_cached_transcripts",
+                            lambda *a, **k: calls.append(1))
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=factory, use_cache=False,
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert not calls, "use_cache=False must not even check the cache"
+
+    def test_a_failed_transcription_is_not_cached(self, items, tmp_path):
+        """Caching a failure would make every later run against this pair
+        fail the same way for a reason nobody could see."""
+        def failing_factory(key, device, **kwargs):
+            return FakeModel(model_id=f"fake/{key}", device=device, fail_on=1)
+
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=failing_factory,
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        assert not cache_path.is_file()
+
+    def test_the_cache_key_ignores_the_llm_and_the_pipeline(self, items, factory, tmp_path):
+        """The whole point: five LLMs against the same STT engine should cost
+        one transcription, not five."""
+        runner.run_one("whisper", "fake-llm-one", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=factory,
+                       llm_factory=lambda key, **kw: FakeLLM("first"), results_dir=tmp_path)
+        cache_path = runner._transcript_cache_path(tmp_path, "adaptive", "whisper")
+        assert cache_path.is_file()
+
+        frame = runner.run_one(
+            "whisper", "fake-llm-two", "hybrid", items, preprocessing="adaptive",
+            llm_factory=lambda key, **kw: FakeLLM("second"), results_dir=tmp_path)
+        assert set(frame["stt_cached"]) == {True}
+
+    def test_a_different_preprocessing_is_a_different_cache_entry(self, items, factory, tmp_path):
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=factory,
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert not runner._transcript_cache_path(tmp_path, "uniform", "whisper").is_file()
+
+    def test_a_different_stt_engine_is_a_different_cache_entry(self, items, factory, tmp_path):
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       preprocessing="adaptive", model_factory=factory,
+                       llm_factory=lambda key, **kw: FakeLLM("x"), results_dir=tmp_path)
+        assert not runner._transcript_cache_path(tmp_path, "adaptive", "seamless").is_file()

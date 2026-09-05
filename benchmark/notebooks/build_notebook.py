@@ -144,33 +144,45 @@ accepted the model's licence on its page. Without a token, or without having
 accepted the licence, the load fails with *"Cannot access gated repo"* — which
 is easy to mistake for a bug here.
 
-Preferred: **Add-ons → Secrets**, a secret named `HF_TOKEN`. It is never saved
-in this notebook. Get a token (read scope is enough) at
-huggingface.co/settings/tokens.
+**Typed live, not written into this notebook.** This cell prompts for the
+token with a masked field — nothing is echoed back, and nothing here prints
+it — so it never ends up in this cell's source or its saved output, even if
+the notebook is public. Re-run this cell each session; there is nothing to
+carry over because nothing was saved.
+
+If this notebook is your own and stays private, **Add-ons → Secrets** (a
+secret named `HF_TOKEN`) is one step less per session — this cell tries that
+first and only prompts if no secret is set. A public notebook should rely on
+the prompt, not a secret attached to the notebook.
+
+Get a token (read scope is enough) at huggingface.co/settings/tokens.
 """)
 
 code('''
-HF_TOKEN = ""      # leave empty to use the Kaggle secret
-
+import getpass
 import os
 from huggingface_hub import login, model_info, whoami
 
 
 def resolve_hf_token():
-    if not HF_TOKEN:
-        try:
-            from kaggle_secrets import UserSecretsClient
-            secret = UserSecretsClient().get_secret("HF_TOKEN")
-            if secret:
-                return secret.strip(), "Kaggle secret HF_TOKEN"
-        except Exception:
-            pass
-    if HF_TOKEN:
-        return HF_TOKEN.strip(), "the HF_TOKEN variable in this cell"
+    """A Kaggle secret if one is set, otherwise a live masked prompt.
+
+    Neither path writes the token anywhere this notebook file can carry it:
+    a secret lives in Kaggle's own store, not in the notebook, and getpass
+    does not echo what is typed and nothing here prints it back.
+    """
+    try:
+        from kaggle_secrets import UserSecretsClient
+        secret = UserSecretsClient().get_secret("HF_TOKEN")
+        if secret:
+            return secret.strip(), "Kaggle secret HF_TOKEN"
+    except Exception:
+        pass
     for name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN"):
         if os.environ.get(name):
             return os.environ[name].strip(), f"${name}"
-    return None, None
+    typed = getpass.getpass("Hugging Face token (hidden while typing, not saved anywhere): ")
+    return (typed.strip(), "typed just now") if typed.strip() else (None, None)
 
 
 _token, _source = resolve_hf_token()
@@ -180,8 +192,7 @@ if _token:
     name = whoami().get("name", "unknown")
     print(f"signed in as {name}   (token from {_source})")
 else:
-    print("No token found. Ungated models still download; gated ones will not.")
-    print("Add one under Add-ons -> Secrets as HF_TOKEN, or set HF_TOKEN above.")
+    print("No token given. Ungated models still download; gated ones will not.")
 ''')
 
 code('''

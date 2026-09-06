@@ -103,7 +103,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
             precision: str = "fp16", cards: int = 1, devices=None,
             preprocessing: str | None = None, structure_guide: str | None = None,
             terms=None, results_dir=None, model_factory=None, llm_factory=None,
-            use_cache: bool = True):
+            use_cache: bool = True, max_new_tokens: int | None = None):
     """Run exactly one (stt, llm, pipeline) configuration end to end.
 
     `stt_key=None` is `multimodal`: no transcription stage, the LLM hears the
@@ -121,6 +121,14 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     which is also what happens automatically when `model_factory` is given: a
     caller supplying a stub wants it exercised, not skipped by a stale cache
     from a real run.
+
+    `max_new_tokens` overrides `settings.LLM_MAX_NEW_TOKENS` for this call
+    only. The `separate` pipeline asks the model to fill three full fields
+    (`raw_transcript`, `corrected_transcript`, `final_text`), which is easy to
+    run past the default 1536-token cap on a real report -- a run cut off
+    mid-generation shows up as `no JSON object found` or a `JSONDecodeError`
+    on the longer clips specifically, since the model never got to write
+    the closing brace.
 
     Returns the per-clip DataFrame (with a trailing SUMMARY row) and also
     writes it to `results_dir/results__<label>.csv` -- the write happens
@@ -175,7 +183,8 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
 
     # --- LLM stage -------------------------------------------------------
     print(f"[llm] {llm_key} ({precision}, {cards} card(s))")
-    model = (llm_factory or llm_module.build)(llm_key, precision=precision, cards=cards)
+    llm_kwargs = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
+    model = (llm_factory or llm_module.build)(llm_key, precision=precision, cards=cards, **llm_kwargs)
     load_started = time.perf_counter()
     model.load()
     load_seconds = time.perf_counter() - load_started

@@ -298,6 +298,13 @@ print("preprocessing options:", {**plan.PREPROCESSING, None: "fixed windows, no 
 
 STRUCTURE_GUIDE = report_structure.GUIDE   # or None to score the bare controller prompt
 
+# The `separate` pipeline asks for three full fields (raw_transcript,
+# corrected_transcript, final_text) -- easy to overrun the 1536-token default
+# on a real report. A generation cut off mid-JSON shows up as "no JSON object
+# found" or a JSONDecodeError, and only on the longer clips, since the model
+# never reached the closing brace. Raise this if a run shows that pattern.
+MAX_NEW_TOKENS = None          # None uses settings.LLM_MAX_NEW_TOKENS (1536); try 3072 if truncating
+
 _placement = next(p for p in placements if p.model == LLM_KEY)
 PRECISION, CARDS = _placement.precision, _placement.cards
 print(f"{LLM_KEY}: tier {_placement.tier}, {_placement.describe()}")
@@ -342,6 +349,7 @@ df_{index:02d} = runner.run_one(
     "{stt_key}", LLM_KEY, PIPELINE, clips,
     language=LANGUAGE, devices=DEVICES, precision=PRECISION, cards=CARDS,
     preprocessing=PREPROCESSING, structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
+    max_new_tokens=MAX_NEW_TOKENS,
     label="{index:02d}_{stt_key}__" + LLM_KEY + "__" + PIPELINE + "__" + str(PREPROCESSING),
 )
 df_{index:02d}[df_{index:02d}["asset_id"] != "SUMMARY"][

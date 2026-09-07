@@ -118,7 +118,21 @@ class TestParsingTheReply:
     def test_a_reply_missing_final_text_is_named(self):
         reply = json.dumps({"raw_transcript": "r", "corrected_transcript": "c"})
         report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
-        assert report.error == "the model returned no final_text"
+        assert report.error.startswith("the model returned no final_text")
+
+    def test_the_error_carries_a_snippet_of_the_reply(self):
+        """A failure without the actual reply text is a dead end -- the CSV's
+        `transcription_error` column is the only place a Kaggle run's failures
+        are visible after the fact."""
+        reply = json.dumps({"raw_transcript": "r", "corrected_transcript": "c"})
+        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
+        assert "raw_transcript" in report.error
+
+    def test_a_long_reply_is_truncated_to_head_and_tail(self):
+        reply = json.dumps({"raw_transcript": "x" * 5000})
+        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
+        assert "chars omitted" in report.error
+        assert len(report.error) < 1000
 
     def test_separate_with_no_transcript_is_refused(self):
         report = pipeline.build_report("A1", {}, FakeLLM(), "separate")

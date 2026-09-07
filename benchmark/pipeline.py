@@ -83,6 +83,17 @@ def _in_slot_order(transcripts: dict[str, str]) -> list[tuple[str, str]]:
                   key=lambda item: int(item[0].removeprefix("transcript_")))
 
 
+def _snippet(reply: str, head: int = 200, tail: int = 200) -> str:
+    """Head and tail of a failed reply, for the CSV's `transcription_error`
+    column. A truncated-JSON failure looks different from a repetition-loop
+    failure at the tail; a refusal looks different at the head. Neither is
+    visible from the exception message alone."""
+    reply = reply.replace("\n", " ").strip()
+    if len(reply) <= head + tail:
+        return repr(reply)
+    return repr(f"{reply[:head]} ...[{len(reply) - head - tail} chars omitted]... {reply[-tail:]}")
+
+
 def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: str,
                  structure_guide: str | None = None) -> Report:
     """One LLM call, parsed into a report.
@@ -114,9 +125,11 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
         report.raw_transcript = parsed.get("raw_transcript") or ""
         report.corrected_transcript = parsed.get("corrected_transcript") or ""
         if not report.final_text:
-            report.error = "the model returned no final_text"
+            report.error = f"the model returned no final_text | reply: {_snippet(reply)}"
     except Exception as error:  # noqa: BLE001 - recorded per recording, never fatal
-        report.error = f"{type(error).__name__}: {error}"
+        # `reply` may not exist if model.generate() itself raised before returning.
+        tail = f" | reply: {_snippet(reply)}" if "reply" in locals() else ""
+        report.error = f"{type(error).__name__}: {error}{tail}"
     report.elapsed_seconds = time.perf_counter() - started
     return report
 

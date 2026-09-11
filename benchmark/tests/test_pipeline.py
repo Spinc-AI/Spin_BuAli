@@ -35,8 +35,8 @@ class FakeLLM:
     def unload(self):
         pass
 
-    def generate(self, system_prompt, user_text):
-        self.calls.append({"system": system_prompt, "user": user_text})
+    def generate(self, system_prompt, user_text, audio_path=None):
+        self.calls.append({"system": system_prompt, "user": user_text, "audio_path": audio_path})
         if self.fail:
             raise RuntimeError("CUDA out of memory")
         if self.raw_reply is not None:
@@ -58,8 +58,32 @@ class TestItUsesTheProductionPrompt:
 
     def test_multimodal_gets_the_audio_prompt(self):
         model = FakeLLM()
-        pipeline.build_report("A1", {}, model, "multimodal")
+        pipeline.build_report("A1", {}, model, "multimodal", audio_path=pathlib.Path("A1.wav"))
         assert model.calls[0]["system"].startswith(bridge.TRANSCRIBE_FROM_AUDIO)
+
+    def test_multimodal_without_audio_path_is_refused(self):
+        """Silently generating from no transcript and no audio would produce a
+        report about nothing -- the exact failure mode this whole thread
+        started from (multimodal cells that never actually heard anything)."""
+        model = FakeLLM()
+        report = pipeline.build_report("A1", {}, model, "multimodal")
+        assert "needs the recording" in report.error
+        assert model.calls == []
+
+    def test_the_audio_path_reaches_generate(self):
+        model = FakeLLM()
+        pipeline.build_report("A1", {}, model, "multimodal", audio_path=pathlib.Path("A1.wav"))
+        assert model.calls[0]["audio_path"] == pathlib.Path("A1.wav")
+
+    def test_separate_refuses_an_audio_path(self):
+        """separate reconciles transcripts; an audio_path here is a caller
+        bug (asking the wrong pipeline to use audio), not something to
+        silently ignore."""
+        model = FakeLLM()
+        report = pipeline.build_report("A1", {"transcript_1": "x"}, model, "separate",
+                                       audio_path=pathlib.Path("A1.wav"))
+        assert "not audio" in report.error
+        assert model.calls == []
 
     def test_the_json_template_is_always_appended(self):
         """Without it the model has no idea what shape to answer in."""
@@ -89,7 +113,8 @@ class TestItUsesTheProductionPrompt:
         """Reference material, not ground truth -- it changes what the model
         does with a disagreement."""
         model = FakeLLM()
-        pipeline.build_report("A1", {"transcript_1": "x"}, model, "multimodal")
+        pipeline.build_report("A1", {"transcript_1": "x"}, model, "multimodal",
+                              audio_path=pathlib.Path("A1.wav"))
         assert "may contain errors" in model.calls[0]["user"]
 
     def test_slot_order_follows_the_number_not_the_string(self):
@@ -117,7 +142,8 @@ class TestParsingTheReply:
 
     def test_a_reply_missing_final_text_is_named(self):
         reply = json.dumps({"raw_transcript": "r", "corrected_transcript": "c"})
-        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
+        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal",
+                                       audio_path=pathlib.Path("A1.wav"))
         assert report.error.startswith("the model returned no final_text")
 
     def test_the_error_carries_a_snippet_of_the_reply(self):
@@ -125,12 +151,14 @@ class TestParsingTheReply:
         `transcription_error` column is the only place a Kaggle run's failures
         are visible after the fact."""
         reply = json.dumps({"raw_transcript": "r", "corrected_transcript": "c"})
-        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
+        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal",
+                                       audio_path=pathlib.Path("A1.wav"))
         assert "raw_transcript" in report.error
 
     def test_a_long_reply_is_truncated_to_head_and_tail(self):
         reply = json.dumps({"raw_transcript": "x" * 5000})
-        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal")
+        report = pipeline.build_report("A1", {}, FakeLLM(raw_reply=reply), "multimodal",
+                                       audio_path=pathlib.Path("A1.wav"))
         assert "chars omitted" in report.error
         assert len(report.error) < 1000
 
@@ -182,7 +210,7 @@ class TestScoringTheReport:
 
     def test_unlabelled_recordings_are_not_scored(self):
         items = [Item("A1", pathlib.Path("A1.wav"), None)]
-        reports = pipeline.build_reports({"A1": {}}, FakeLLM(), "multimodal")
+        reports = pipeline.build_reports({"A1": {}}, FakeLLM(), "multimodal", items=items)
         results, _ = scoring.score_reports(reports, items, bridge.ClinicalTerms())
         assert results == []
 

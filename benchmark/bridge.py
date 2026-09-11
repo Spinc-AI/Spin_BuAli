@@ -15,6 +15,14 @@ Two rules keep it from spreading:
 * `stt/` is imported for its model classes only. Adding a model to
   `stt/app/config.py` is enough to make it benchmarkable; nothing here lists
   models by name.
+* `core_llm/` is imported for its **audio-capable** model classes only --
+  GemmaAudioModel, QwenOmniModel, and any future class whose `load()` needs
+  something other than a plain `AutoModelForCausalLM`. Text-only models
+  still load through `llm.LocalLLM`'s own loader, which additionally
+  supports the quantized tiers (int8/nf4) `core_llm/` deliberately does not.
+  Reusing `core_llm/`'s classes here means a model's audio-handling code is
+  written once, not once in production and once (differently) for the
+  benchmark.
 * `controller/` is imported for its **prompts**, and for nothing else. The
   prompt is the experiment: a benchmark that used its own wording would be
   measuring a system nobody ships. Those strings are tuned and the file that
@@ -66,6 +74,7 @@ __all__ = [
     "semantic_available", "semantic_batch",
     "RECONCILE", "TRANSCRIBE_FROM_AUDIO", "with_template", "extract_json",
     "model_registry", "build_stt_model", "torch_or_none", "chunk_planner", "speech_regions",
+    "build_llm_model",
 ]
 
 
@@ -102,6 +111,61 @@ def build_stt_model(key, device):
     spec = dict(stt_config.MODEL_REGISTRY[key])
     cls = stt_model._MODEL_TYPES[spec.pop("type")]
     return cls(model_id=spec.pop("model_id"), device=device, **spec)
+
+
+def _core_llm():
+    """core_llm/model.py, imported lazily and defensively.
+
+    Two problems `_ensure_on_path` (append) does not solve here, unlike for
+    `stt/` and `controller/`: core_llm's `model.py` does a bare `import
+    config`, and `evaluation/`, `controller/` and `stt/app/` each already
+    have their own `config.py` on the path by the time this runs -- exactly
+    the collision `_ensure_on_path`'s append-not-insert rule exists to avoid
+    for the *other* siblings, but core_llm's flat layout (no subpackage the
+    way `stt/app/` has) walks straight into it regardless of append order.
+    Mirrors `llm.py`'s `_controller_llm_client()`: insert core_llm's
+    directory at the *front* so it wins, drop any already-cached `config` /
+    `model` from sys.modules first, import, then restore both so this
+    doesn't leave core_llm's `config` shadowing anyone else's afterward.
+    """
+    path = str(settings.CORE_LLM_DIR)
+    original = list(sys.path)
+    sys.path.insert(0, path)
+    for name in ("config", "model"):
+        sys.modules.pop(name, None)
+    try:
+        import model as core_llm_model
+
+        return core_llm_model
+    finally:
+        sys.path[:] = original
+        for name in ("config", "model"):
+            sys.modules.pop(name, None)
+
+
+def build_llm_model(key):
+    """One of core_llm/model.py's registered classes, not yet loaded.
+
+    Only for audio-capable keys -- `llm.build()` is the one caller, and it
+    only reaches here for a key in `plan.AUDIO_CAPABLE`. A text-only key
+    still goes through `llm.LocalLLM`, which this deliberately does not
+    replace: `core_llm/` classes never quantize, and several of the
+    text-only tier ladder's placements depend on being able to.
+
+    The returned instance carries a `_core_llm_config` attribute -- core_llm's
+    own `config` module, still bound inside the class's `__module__` namespace
+    even after this function's sys.modules cleanup -- so a caller can override
+    `MAX_NEW_TOKENS` for one generation the same way `settings.LLM_MAX_NEW_TOKENS`
+    already can for the text-only path (see `llm.CoreLLMAdapter`).
+    """
+    core_llm_model = _core_llm()
+    if key not in core_llm_model.MODEL_REGISTRY:
+        raise KeyError(f"unknown model {key!r}; registered in core_llm/model.py: "
+                       f"{sorted(core_llm_model.MODEL_REGISTRY)}")
+    cls, model_id = core_llm_model.MODEL_REGISTRY[key]
+    instance = cls(model_id)
+    instance._core_llm_config = core_llm_model.config
+    return instance
 
 
 # --- preprocessing ---------------------------------------------------------

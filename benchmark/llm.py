@@ -13,6 +13,7 @@ client and never touch this file's loader.
 import time
 
 import bridge
+import plan
 import settings
 
 # bitsandbytes' two options. int8 keeps more of the weight and is slower to
@@ -94,10 +95,18 @@ class LocalLLM:
         self.load_seconds = time.perf_counter() - started
         return self
 
-    def generate(self, system_prompt: str, user_text: str) -> str:
+    def generate(self, system_prompt: str, user_text: str, audio_path: str | None = None) -> str:
         """One completion. Only the newly generated tokens are decoded --
         several of these models echo the prompt otherwise, and a report that
-        begins with its own instructions is not a report."""
+        begins with its own instructions is not a report.
+
+        `LocalLLM` only ever loads a plain `AutoModelForCausalLM` -- text-only
+        by construction -- so `build()` never routes an audio-capable key
+        here (see `CoreLLMAdapter`). An `audio_path` reaching this point
+        means the caller asked the wrong class for audio.
+        """
+        if audio_path:
+            raise ValueError(f"{self.model_key} is text-only and can't accept audio input")
         torch = _torch()
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text or ""}]
@@ -143,13 +152,62 @@ class CloudLLM:
     def load(self):
         return self  # nothing to load
 
-    def generate(self, system_prompt: str, user_text: str) -> str:
+    def generate(self, system_prompt: str, user_text: str, audio_path: str | None = None) -> str:
+        if audio_path:
+            raise NotImplementedError(
+                f"{self.model_key}: the controller's LLM client has no audio-upload "
+                "path yet -- the multimodal pipeline currently needs a local, "
+                "audio-capable model (see plan.AUDIO_CAPABLE)")
         client = _controller_llm_client()
         return client.complete(system_prompt, user_text, model=self.model_key,
                                api_key=self._api_key, base_url=self._base_url)
 
     def unload(self):
         pass
+
+
+class CoreLLMAdapter:
+    """Wraps one of `core_llm/model.py`'s own classes (GemmaAudioModel,
+    QwenOmniModel, MedGemmaTextModel, Phi4MultimodalModel, ...) behind this
+    module's `generate(system_prompt, user_text, audio_path=None)` interface,
+    so `runner.run_one` does not need to know which of `LocalLLM` or this it
+    is holding.
+
+    Audio and text handling both live in `core_llm/model.py`, not duplicated
+    here -- see `bridge.py`'s module docstring for why. The trade-off: unlike
+    `LocalLLM`, this never quantizes (`core_llm/` doesn't), and
+    `max_new_tokens` overrides are not supported here yet -- `core_llm/`
+    reads `MAX_NEW_TOKENS` from its own environment at import time, so the
+    workaround is to set that env var before the notebook's imports run,
+    not per-cell.
+    """
+
+    def __init__(self, model_key: str, core_model, precision: str = "fp16",
+                 cards: int = 1, max_new_tokens: int | None = None):
+        self.model_key = model_key
+        self.model_id = core_model.model_id
+        self.precision = precision
+        self.cards = cards
+        self.load_seconds = 0.0
+        self._core_model = core_model
+
+    def load(self):
+        started = time.perf_counter()
+        self._core_model.load()
+        self.load_seconds = time.perf_counter() - started
+        return self
+
+    def generate(self, system_prompt: str, user_text: str, audio_path: str | None = None) -> str:
+        if audio_path and not self._core_model.supports_audio:
+            raise ValueError(f"{self.model_key} is text-only and can't accept audio input")
+        messages = [{"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text or ""}]
+        # temperature <= 0.01 means greedy decoding, matching LocalLLM's
+        # do_sample=False -- a benchmark wants repeatable runs, not variety.
+        return self._core_model.chat(messages, audio_path=audio_path, temperature=0.0)
+
+    def unload(self):
+        self._core_model.unload()
 
 
 def _controller_llm_client():
@@ -179,9 +237,19 @@ def _controller_llm_client():
 
 def build(model_key: str, precision: str = "fp16", cards: int = 1,
           model_id: str | None = None, **kwargs):
-    """The right kind of model for `model_key`, not yet loaded."""
+    """The right kind of model for `model_key`, not yet loaded.
+
+    An audio-capable key (`plan.AUDIO_CAPABLE`) routes to `CoreLLMAdapter`,
+    which reuses `core_llm/model.py`'s own class for that model -- the only
+    place that knows how to attach audio for that specific architecture.
+    Everything else goes through `LocalLLM`, which additionally supports the
+    quantized tiers `core_llm/` does not.
+    """
     if precision == "cloud" or ":" in model_key:
         return CloudLLM(model_key, **kwargs)
+    if model_key in plan.AUDIO_CAPABLE:
+        return CoreLLMAdapter(model_key, bridge.build_llm_model(model_key),
+                              precision=precision, cards=cards, **kwargs)
     return LocalLLM(model_key, model_id or _hugging_face_id(model_key),
                     precision=precision, cards=cards, **kwargs)
 
@@ -236,10 +304,16 @@ class EchoLLM:
     def unload(self):
         pass
 
-    def generate(self, system_prompt: str, user_text: str) -> str:
+    def generate(self, system_prompt: str, user_text: str, audio_path: str | None = None) -> str:
         import json
+        import pathlib
 
         text = (user_text or "").strip()
+        if not text and audio_path:
+            # Multimodal calls pass no transcript text -- the only way a test
+            # can prove the audio actually reached generate() is to echo
+            # something that depends on it.
+            text = f"[audio: {pathlib.Path(audio_path).name}]"
         return json.dumps({"raw_transcript": text, "corrected_transcript": text,
                            "final_text": text, "discrepancies_found": [], "notes": None})
 

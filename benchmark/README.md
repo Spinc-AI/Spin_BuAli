@@ -41,7 +41,7 @@ ones that already wrote their file.
 | `scoring.py` | Calls `evaluation/`'s real metrics — never reimplements them |
 | `leaderboard.py` | Flattens a scored report into one CSV row |
 | `tiers.py` | Which precision (fp16 / int8 / nf4) this hardware can hold a model at |
-| `bridge.py` | **The only file that imports `evaluation/`, `stt/` and `controller/`** |
+| `bridge.py` | **The only file that imports `evaluation/`, `stt/`, `controller/` and `core_llm/`** |
 | `notebooks/build_notebook.py` | Generates the notebook from these sources |
 
 `plan.py`, `ledger.py`, `session.py`, `campaign.py` are a separate, older path:
@@ -76,18 +76,18 @@ T4 ×2** and **Internet → On**, then run the cells in order:
 3. **Dataset** — finds `labels.csv` under `/kaggle/input` at any depth. If it
    is not found, it prints the mounted tree so the real path is visible
    instead of guessed at.
-4. **Config** — `LLM_KEY`, `PIPELINE`, `STRUCTURE_GUIDE` in one place; every
-   run cell reads these, so trying a different model means editing one cell,
-   not five.
-5. **Runs** — one cell per STT engine (the top 3 from `docs/STT_Models.pdf`).
-   Copy a cell to add another engine, LLM, or pipeline.
+4. **Config** — windowing, the report-structure addendum, and the token cap,
+   in one place. The STT and LLM rosters are fixed (see below) rather than a
+   variable to edit here.
+5. **Runs** — 12 fixed cells: 3 STT x 3 LLM (`separate`) + 3 LLM
+   (`multimodal`, no STT stage). Copy a cell to add another combination.
 6. **Master** — merges every `results__*.csv` present into one sorted table.
    Safe to run after any subset of the run cells.
 
-## The top 3 STT engines
+## The rosters
 
-`runner.TOP3_STT`, in the rank order `docs/STT_Models.pdf` measured on FLEURS
-fa_ir:
+`runner.TOP3_STT` — the three lowest-WER engines in `docs/STT_Models.pdf`,
+FLEURS fa_ir:
 
 | Key | Checkpoint | WER (PDF) |
 |---|---|---|
@@ -99,6 +99,39 @@ The other seven registered models (mms-fl102, whisper-vhdm, stock Whisper
 below large-v3, wav2vec2, mms-1b-all, whisper-halakoo, whisper-large-v3,
 whisper-large-v3-turbo) are not run here because that PDF already showed they
 lose on this language.
+
+`runner.TOP3_LLM` — the three lightest LLMs by parameter count
+(`plan.LLM_PARAMS`), for `separate` (text only, so audio capability doesn't
+matter):
+
+| Key | Params | Audio? |
+|---|---|---|
+| `medgemma-1.5-4b` | 4.3B | No |
+| `phi-4-multimodal` | 5.6B | Yes |
+| `gemma-4-e4b` | 7.85B (despite the "E4B" name) | Yes |
+
+`runner.MULTIMODAL_LLM` — the three lightest **audio-capable** LLMs, for
+`multimodal` (the LLM hears the recording directly, so a text-only model
+can't run here at all — `gemma-4-12b` takes `medgemma-1.5-4b`'s place):
+
+| Key | Params |
+|---|---|
+| `phi-4-multimodal` | 5.6B |
+| `gemma-4-e4b` | 7.85B |
+| `gemma-4-12b` | 12B |
+
+**Audio-capable models load through `core_llm/model.py`'s own classes, not a
+duplicate loader.** `llm.build()` routes any key in `plan.AUDIO_CAPABLE` to
+`llm.CoreLLMAdapter`, which wraps `bridge.build_llm_model()` — the same
+`GemmaAudioModel`/`QwenOmniModel`/`Phi4MultimodalModel` classes production
+uses, so audio-attachment code is written once. This closes a real gap the
+benchmark had before: `multimodal` runs previously never sent the recording
+to the model at all (`LocalLLM.generate()` had no audio parameter, and
+`pipeline.build_reports()` never received the dataset items to find an audio
+path in the first place) — every prior `multimodal` run scored the model
+against silence, however the numbers looked. `pipeline.build_report()` now
+raises immediately if `multimodal` is asked for without an `audio_path`,
+so that failure mode can't recur silently.
 
 ## The report-structure addendum
 

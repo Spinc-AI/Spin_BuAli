@@ -96,7 +96,7 @@ def _snippet(reply: str, head: int = 200, tail: int = 200) -> str:
 
 
 def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: str,
-                 structure_guide: str | None = None) -> Report:
+                 structure_guide: str | None = None, audio_path=None) -> Report:
     """One LLM call, parsed into a report.
 
     `structure_guide` is a benchmark-only addendum -- never part of
@@ -107,6 +107,11 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
     different order should not be marked wrong for that alone. See
     `report_structure.py`.
 
+    `audio_path` is the recording itself, only meaningful (and only ever
+    passed) for `multimodal` -- `separate` reconciles transcripts and never
+    touches the audio, so passing it there would be a caller bug, not
+    something to silently accept.
+
     A failure is recorded on the report rather than raised. One recording that
     the model refused is a data point; it must not cost the other eight.
     """
@@ -116,11 +121,16 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
         if pipeline == "separate":
             if not transcripts:
                 raise ValueError("separate needs at least one transcript to reconcile")
+            if audio_path:
+                raise ValueError("separate reconciles transcripts, not audio -- "
+                                 "audio_path should not be set for this pipeline")
             system_prompt, user_text = reconcile_prompt(transcripts, structure_guide)
         else:
+            if not audio_path:
+                raise ValueError(f"{pipeline} needs the recording; audio_path was not given")
             system_prompt, user_text = audio_prompt(transcripts, structure_guide)
 
-        reply = model.generate(system_prompt, user_text)
+        reply = model.generate(system_prompt, user_text, audio_path=audio_path)
         parsed = bridge.extract_json(reply)
         report.final_text = parsed.get("final_text") or ""
         report.raw_transcript = parsed.get("raw_transcript") or ""
@@ -136,15 +146,25 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
 
 
 def build_reports(transcripts_by_asset: dict[str, dict[str, str]], model, pipeline: str,
-                  on_progress=None, structure_guide: str | None = None) -> list[Report]:
+                  on_progress=None, structure_guide: str | None = None, items=None) -> list[Report]:
     """The report stage over a whole batch, with the model loaded once.
 
     Loading dominates: a 30B at 4-bit takes minutes to place and seconds per
     report, so the batch is what the load is amortised over.
+
+    `items` is the dataset entries this batch covers -- `dataset.Item`, each
+    with an `.audio` path -- needed only for `separate` != pipeline (i.e.
+    `multimodal`), which sends the recording itself rather than a transcript.
+    `separate` never reads `items`, so passing `None` there (the default) is
+    fine; a non-`separate` pipeline without `items` fails per-recording in
+    `build_report`, not silently.
     """
+    audio_by_asset = {item.asset_id: item.audio for item in items} if items else {}
     reports = []
     for asset_id, transcripts in transcripts_by_asset.items():
-        report = build_report(asset_id, transcripts, model, pipeline, structure_guide)
+        audio_path = audio_by_asset.get(asset_id) if pipeline != "separate" else None
+        report = build_report(asset_id, transcripts, model, pipeline, structure_guide,
+                              audio_path=audio_path)
         reports.append(report)
         if on_progress:
             on_progress(report)

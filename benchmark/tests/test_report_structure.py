@@ -70,7 +70,7 @@ class TestNeverTouchesTheControllerPrompt:
         class RecordingLLM:
             calls = []
 
-            def generate(self, system, user):
+            def generate(self, system, user, audio_path=None):
                 self.calls.append(system)
                 return '{"final_text": "ok"}'
 

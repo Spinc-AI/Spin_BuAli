@@ -50,6 +50,29 @@ TOP3_STT = [
     "whisper",          # nezamisafa/whisper-persian-v4       WER 0.137
 ]
 
+# The three lightest LLMs by param count (plan.LLM_PARAMS, fp16) -- used for
+# the `separate` pipeline, where the LLM only ever sees text (the STT
+# transcript), so audio capability doesn't matter here. medgemma-1.5-4b has
+# no audio input at all; it is still the right choice for `separate` because
+# that pipeline never needs it. Note gemma-4-e4b's real weight is 7.85B
+# despite the "E4B" name -- its "4B" refers to effective compute, not the
+# on-disk parameter count.
+TOP3_LLM = [
+    "medgemma-1.5-4b",  # 4.3B  -> ~8.6 GB
+    "phi-4-multimodal", # 5.6B  -> ~11.2 GB
+    "gemma-4-e4b",       # 7.85B -> ~15.7 GB
+]
+
+# The three lightest AUDIO-CAPABLE LLMs -- used for the `multimodal`
+# pipeline, where the LLM hears the recording directly and text-only models
+# (medgemma-1.5-4b included) cannot run at all. gemma-4-12b takes
+# medgemma-1.5-4b's place here for exactly that reason.
+MULTIMODAL_LLM = [
+    "phi-4-multimodal", # 5.6B  -> ~11.2 GB
+    "gemma-4-e4b",       # 7.85B -> ~15.7 GB
+    "gemma-4-12b",       # 12B   -> ~24 GB
+]
+
 
 def _peak_vram_gb() -> float:
     torch = bridge.torch_or_none()
@@ -191,6 +214,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     try:
         reports = pipeline.build_reports(
             transcripts_by_asset, model, pipeline_name, structure_guide=structure_guide,
+            items=items,
             on_progress=lambda r: print(
                 f"    {r.asset_id:14} {r.elapsed_seconds:6.1f}s"
                 + (f"   ERROR: {r.error}" if r.error else "")))

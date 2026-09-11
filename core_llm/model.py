@@ -8,10 +8,18 @@ Models come in three shapes, each with its own transformers classes and
 chat-template conventions. Add a model by writing a ``BaseLLM`` subclass (or
 reusing one) and adding a ``MODEL_REGISTRY`` entry; nothing in main.py changes.
 
-  TextOnlyModel    Aya Expanse 8B/32B, Gemma 4 31B. No audio input.
-  GemmaAudioModel  Gemma 4 E4B/12B ("Unified", encoder-free). Text and audio.
-  QwenOmniModel    Qwen3-Omni-30B, Thinker-only -- text out, no speech
-                   generation, which also skips the Talker's codec weights.
+  TextOnlyModel        Aya Expanse 8B/32B, Gemma 4 31B. No audio input.
+  GemmaAudioModel      Gemma 4 E4B/12B ("Unified", encoder-free). Text and audio.
+  QwenOmniModel        Qwen3-Omni-30B, Thinker-only -- text out, no speech
+                       generation, which also skips the Talker's codec weights.
+  MedGemmaTextModel    MedGemma 1.5 4B, used text-only here. The checkpoint is
+                       image+text (AutoModelForImageTextToText, not a plain
+                       causal LM), but nothing in this codebase sends it an
+                       image, so no image content is ever attached.
+  Phi4MultimodalModel  Phi-4-multimodal-instruct. Text and audio, via
+                       Microsoft's own custom modeling code
+                       (trust_remote_code=True) rather than a standard
+                       transformers architecture.
 
 Two deliberate trade-offs:
   - No Ollama. It cannot accept audio input at all, so keeping it would mean
@@ -27,9 +35,11 @@ from abc import ABC, abstractmethod
 import torch
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForImageTextToText,
     AutoModelForMultimodalLM,
     AutoProcessor,
     AutoTokenizer,
+    GenerationConfig,
     Qwen3OmniMoeProcessor,
     Qwen3OmniMoeThinkerForConditionalGeneration,
 )
@@ -200,6 +210,88 @@ class QwenOmniModel(BaseLLM):
         )[0]
 
 
+class MedGemmaTextModel(BaseLLM):
+    """MedGemma 1.5 4B, used text-only.
+
+    The checkpoint is image+text (loads via AutoModelForImageTextToText, not
+    AutoModelForCausalLM -- attempting the latter fails at load time), but
+    nothing here ever attaches an image, so the chat template only ever sees
+    a text content part.
+    """
+
+    supports_audio = False
+
+    def load(self):
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = AutoModelForImageTextToText.from_pretrained(
+            self.model_id, device_map=config.DEVICE_MAP, dtype="auto"
+        )
+
+    def chat(self, messages, audio_path=None, temperature=0.3):
+        if audio_path:
+            raise ValueError(f"{self.model_id} is text-only and can't accept audio input")
+        converted = [{"role": m["role"], "content": [{"type": "text", "text": m["content"]}]}
+                    for m in messages]
+        inputs = self._processor.apply_chat_template(
+            converted, tokenize=True, add_generation_prompt=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self._model.device, dtype=self._model.dtype)
+        input_len = inputs["input_ids"].shape[-1]
+        with torch.no_grad():
+            outputs = self._model.generate(**inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                                           **_generation_kwargs(temperature))
+        return self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+
+
+class Phi4MultimodalModel(BaseLLM):
+    """Phi-4-multimodal-instruct. Text and audio, via Microsoft's own custom
+    modeling code (trust_remote_code=True) rather than a standard
+    transformers architecture class -- unlike every other model in this
+    file, `AutoModelForCausalLM` here resolves to that custom code, not the
+    plain-causal-LM path TextOnlyModel uses.
+
+    The prompt format is the vendor's own: an inline `<|audio_1|>` placeholder
+    in the text where the audio should be attended to, with the actual audio
+    array passed alongside via the `audios` kwarg -- not a chat-template
+    content list like GemmaAudioModel/QwenOmniModel use.
+    """
+
+    supports_audio = True
+
+    def load(self):
+        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+        self._model = AutoModelForCausalLM.from_pretrained(
+            self.model_id, device_map=config.DEVICE_MAP, dtype="auto",
+            trust_remote_code=True,
+        )
+        self._generation_config = GenerationConfig.from_pretrained(self.model_id)
+
+    def chat(self, messages, audio_path=None, temperature=0.3):
+        import soundfile as sf
+
+        last_user = _last_user_index(messages) if audio_path else -1
+        prompt_parts = []
+        for i, m in enumerate(messages):
+            text = m["content"]
+            if audio_path and i == last_user:
+                text = f"<|audio_1|>{text}"
+            prompt_parts.append(f"<|{m['role']}|>{text}<|end|>")
+        prompt = "".join(prompt_parts) + "<|assistant|>"
+
+        audios = [sf.read(audio_path)] if audio_path else None
+        inputs = self._processor(text=prompt, audios=audios, return_tensors="pt").to(
+            self._model.device)
+        input_len = inputs["input_ids"].shape[-1]
+        with torch.no_grad():
+            outputs = self._model.generate(
+                **inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                generation_config=self._generation_config,
+                **_generation_kwargs(temperature))
+        return self._processor.batch_decode(
+            outputs[:, input_len:], skip_special_tokens=True,
+            clean_up_tokenization_spaces=False)[0]
+
+
 # ============================================================
 # Registry
 # ============================================================
@@ -210,6 +302,8 @@ MODEL_REGISTRY = {
     "gemma-4-e4b": (GemmaAudioModel, config.GEMMA_E4B_MODEL_ID),
     "gemma-4-12b": (GemmaAudioModel, config.GEMMA_12B_MODEL_ID),
     "qwen3-omni-30b": (QwenOmniModel, config.QWEN_OMNI_MODEL_ID),
+    "medgemma-1.5-4b": (MedGemmaTextModel, config.MEDGEMMA_4B_MODEL_ID),
+    "phi-4-multimodal": (Phi4MultimodalModel, config.PHI4_MULTIMODAL_MODEL_ID),
 }
 
 

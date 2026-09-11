@@ -32,7 +32,7 @@ class FakeLLM:
     def unload(self):
         pass
 
-    def generate(self, system_prompt, user_text):
+    def generate(self, system_prompt, user_text, audio_path=None):
         self.calls.append(system_prompt)
         if self.fail:
             raise RuntimeError("boom")
@@ -51,6 +51,42 @@ class TestTop3:
 
     def test_the_keys_match_the_pdf_s_rank_order(self):
         assert runner.TOP3_STT == ["seamless", "seamless-medium", "whisper"]
+
+    def test_top3_llm_and_multimodal_llm_are_exactly_three_real_registry_keys(self):
+        """Same bug class as TOP3_STT, on the LLM side: a key that isn't
+        actually in core_llm/model.py's MODEL_REGISTRY resolves to a
+        LoadFailed at load time, not at notebook-build time. Resolving each
+        key for real (against the live core_llm/config.py + model.py source)
+        is what would have caught it."""
+        for keys in (runner.TOP3_LLM, runner.MULTIMODAL_LLM):
+            assert len(keys) == 3
+            assert len(set(keys)) == 3
+            for key in keys:
+                assert llm_module._hugging_face_id(key)  # raises LoadFailed if unknown
+
+    def test_multimodal_llm_are_all_audio_capable(self):
+        """The whole reason MULTIMODAL_LLM exists as a separate list from
+        TOP3_LLM: the multimodal pipeline sends audio directly to the model,
+        so a text-only key here would fail every run, not just look odd.
+
+        Parsed as text, not imported -- same reasoning as
+        llm._hugging_face_id: importing core_llm pulls in torch and a
+        `config` module that collides with the other siblings on sys.path.
+        """
+        import re
+
+        import settings
+
+        registry = (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
+        # Audio-capable classes only, per core_llm/model.py's own module
+        # docstring -- TextOnlyModel and MedGemmaTextModel are deliberately
+        # excluded.
+        audio_capable = {"GemmaAudioModel", "QwenOmniModel", "Phi4MultimodalModel"}
+        for key in runner.MULTIMODAL_LLM:
+            match = re.search(rf'"{re.escape(key)}":\s*\((\w+),', registry)
+            assert match, f"{key} not found in core_llm/model.py's MODEL_REGISTRY"
+            assert match.group(1) in audio_capable, (
+                f"{key} is registered as {match.group(1)}, which cannot take audio input")
 
 
 class TestRunOne:

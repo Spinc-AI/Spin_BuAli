@@ -25,6 +25,8 @@ GEMMA_31B_MODEL_ID = os.getenv("GEMMA_31B_MODEL_ID", "google/gemma-4-31B-it")
 GEMMA_E4B_MODEL_ID = os.getenv("GEMMA_E4B_MODEL_ID", "google/gemma-4-E4B-it")
 GEMMA_12B_MODEL_ID = os.getenv("GEMMA_12B_MODEL_ID", "google/gemma-4-12B-it")
 QWEN_OMNI_MODEL_ID = os.getenv("QWEN_OMNI_MODEL_ID", "Qwen/Qwen3-Omni-30B-A3B-Instruct")
+MEDGEMMA_4B_MODEL_ID = os.getenv("MEDGEMMA_4B_MODEL_ID", "google/medgemma-1.5-4b-it")
+PHI4_MULTIMODAL_MODEL_ID = os.getenv("PHI4_MULTIMODAL_MODEL_ID", "microsoft/Phi-4-multimodal-instruct")
 
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "aya-expanse-8b")
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "2048"))

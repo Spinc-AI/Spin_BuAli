@@ -31,11 +31,14 @@ LLM_PARAMS = {
     "gemma-4-e4b": 7.85,
     "gemma-4-12b": 12.0,
     "qwen3-omni-30b": 30.5,
+    "medgemma-1.5-4b": 4.3,
+    "phi-4-multimodal": 5.6,
 }
 
 # Which local LLMs can take audio. `separate` sends text only, so it can use
-# any of them; `multimodal` cannot.
-AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b"}
+# any of them; `multimodal` cannot. medgemma-1.5-4b is deliberately absent --
+# it has no audio input at all, despite being one of the lightest models here.
+AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b", "phi-4-multimodal"}
 
 # Preprocessing variants, as (id, description). Chunking is what actually
 # differs; VAD is included because it moves the adaptive chunk boundaries even

@@ -272,9 +272,10 @@ for item in clips:
 md("""
 ## 6 — Run configuration
 
-One place to change the language model, the pipeline, or whether the
-benchmark-only report-structure addendum is used, without editing every run
-cell below.
+Shared settings every run cell below reads -- windowing, the report-structure
+addendum, the token cap, and where results land. The STT and LLM rosters
+themselves are fixed (`runner.TOP3_STT`, `runner.TOP3_LLM`,
+`runner.MULTIMODAL_LLM`); see cell 7 for why each list holds what it holds.
 
 **The addendum is not part of `controller/prompts.py`.** It tells the model
 the section order this dataset's reference reports use, because this
@@ -284,8 +285,6 @@ controller's prompt exactly as production sends it.
 """)
 
 code("""
-LLM_KEY = "aya-expanse-8b"     # any key in plan.LLM_PARAMS -- see cell 3's placement table
-PIPELINE = "separate"          # separate | multimodal
 LANGUAGE = "fa"
 DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other free
 
@@ -305,51 +304,99 @@ STRUCTURE_GUIDE = report_structure.GUIDE   # or None to score the bare controlle
 # never reached the closing brace. Raise this if a run shows that pattern.
 MAX_NEW_TOKENS = None          # None uses settings.LLM_MAX_NEW_TOKENS (1536); try 3072 if truncating
 
-_placement = next(p for p in placements if p.model == LLM_KEY)
-PRECISION, CARDS = _placement.precision, _placement.cards
-print(f"{LLM_KEY}: tier {_placement.tier}, {_placement.describe()}")
-
 RESULTS_DIR = pathlib.Path("/kaggle/working/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def placement_for(llm_key):
+    \"\"\"This LLM's precision/card count from cell 3's placement table --
+    looked up per run cell instead of once, since every cell here can name a
+    different LLM.\"\"\"
+    p = next(p for p in placements if p.model == llm_key)
+    return p.precision, p.cards
 """)
 
 # ── 7. Runs ──────────────────────────────────────────────────────────────
-md("""
-## 7 — Runs: the top 3 STT engines, solo
+md(f"""
+## 7 — Runs: 3 STT engines x 3 LLMs (`separate`), plus 3 LLMs (`multimodal`)
 
-`runner.TOP3_STT` is the three models named in `docs/STT_Models.pdf`, in that
-document's own rank order. Each is its own cell.
+Two rosters, picked for a reason:
 
-**To add a run:** copy a cell, change `stt_key` (or pass `None` for
-`multimodal`) and `label`. **To try a different LLM or pipeline:** change
-`LLM_KEY` / `PIPELINE` in the cell above and re-run — no cell below needs
-editing, since they all read those variables.
+* **`runner.TOP3_STT`** -- the three lowest-WER engines in `docs/STT_Models.pdf`.
+* **`runner.TOP3_LLM`** -- the three *lightest* LLMs by parameter count, used
+  for the `separate` pipeline (text only, so audio capability doesn't matter):
+  {", ".join(f"`{k}`" for k in ["medgemma-1.5-4b", "phi-4-multimodal", "gemma-4-e4b"])}.
+* **`runner.MULTIMODAL_LLM`** -- the three lightest **audio-capable** LLMs,
+  used for `multimodal` (the LLM hears the recording directly, so a text-only
+  model like `medgemma-1.5-4b` cannot run here at all --
+  `gemma-4-12b` takes its place):
+  {", ".join(f"`{k}`" for k in ["phi-4-multimodal", "gemma-4-e4b", "gemma-4-12b"])}.
 
-**Speech recognition is cached.** Changing `LLM_KEY` and re-running these
-cells does not re-transcribe anything — the cache key is `(preprocessing,
-stt_key)` only, so it does not care which LLM or pipeline asked for it. A cell
-that reused a cached transcript prints `-- cached, skipping transcription` and
-its CSV's `stt_cached` column is `True`. The cache lives in
-`RESULTS_DIR/transcripts/`; delete a file there to force that one pair to be
-redone, or pass `use_cache=False` to force every call in a cell to redo it.
+3 STT x 3 LLM = 9 `separate` runs, + 3 `multimodal` runs (one per audio-capable
+LLM, no STT stage) = **12 runs, 12 cells**.
+
+**To add a run:** copy a cell and change its `stt_key`/`llm_key`/`pipeline`/
+`label`. Every cell is independent -- stopping the session after any of them
+loses nothing.
+
+**Speech recognition is cached.** Running several LLMs against the same STT
+engine transcribes once -- the cache key is `(preprocessing, stt_key)` only,
+so it doesn't care which LLM or pipeline asked for it. A cell that reused a
+cached transcript prints `-- cached, skipping transcription` and its CSV's
+`stt_cached` column is `True`. The cache lives in `RESULTS_DIR/transcripts/`;
+delete a file there to force that one pair to be redone, or pass
+`use_cache=False` to force a cell to redo it regardless.
 """)
 
-for index, stt_key in enumerate(["seamless", "seamless-medium", "whisper"], start=1):
-    checkpoint_comment = {
-        "seamless": "facebook/seamless-m4t-v2-large -- WER 0.107 in the PDF",
-        "seamless-medium": "facebook/hf-seamless-m4t-medium -- WER 0.134",
-        "whisper": "nezamisafa/whisper-persian-v4 -- WER 0.137",
-    }[stt_key]
-    md(f"### 7.{index} — `{stt_key}`\n\n{checkpoint_comment}")
-    code(f'''
-df_{index:02d} = runner.run_one(
-    "{stt_key}", LLM_KEY, PIPELINE, clips,
+_stt_comment = {
+    "seamless": "facebook/seamless-m4t-v2-large -- WER 0.107 in the PDF",
+    "seamless-medium": "facebook/hf-seamless-m4t-medium -- WER 0.134",
+    "whisper": "nezamisafa/whisper-persian-v4 -- WER 0.137",
+}
+_llm_comment = {
+    "medgemma-1.5-4b": "google/medgemma-1.5-4b-it -- 4.3B, text only",
+    "phi-4-multimodal": "microsoft/Phi-4-multimodal-instruct -- 5.6B, audio-capable",
+    "gemma-4-e4b": "google/gemma-4-E4B-it -- 7.85B, audio-capable",
+    "gemma-4-12b": "google/gemma-4-12B-it -- 12B, audio-capable",
+}
+
+_top3_stt = ["seamless", "seamless-medium", "whisper"]
+_top3_llm = ["medgemma-1.5-4b", "phi-4-multimodal", "gemma-4-e4b"]
+_multimodal_llm = ["phi-4-multimodal", "gemma-4-e4b", "gemma-4-12b"]
+
+_index = 0
+for stt_key in _top3_stt:
+    for llm_key in _top3_llm:
+        _index += 1
+        md(f"### 7.{_index} — `separate`: `{stt_key}` + `{llm_key}`\n\n"
+           f"{_stt_comment[stt_key]}  \n{_llm_comment[llm_key]}")
+        code(f'''
+PRECISION, CARDS = placement_for("{llm_key}")
+df_{_index:02d} = runner.run_one(
+    "{stt_key}", "{llm_key}", "separate", clips,
     language=LANGUAGE, devices=DEVICES, precision=PRECISION, cards=CARDS,
     preprocessing=PREPROCESSING, structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
     max_new_tokens=MAX_NEW_TOKENS,
-    label="{index:02d}_{stt_key}__" + LLM_KEY + "__" + PIPELINE + "__" + str(PREPROCESSING),
+    label="{_index:02d}_{stt_key}__{llm_key}__separate__" + str(PREPROCESSING),
 )
-df_{index:02d}[df_{index:02d}["asset_id"] != "SUMMARY"][
+df_{_index:02d}[df_{_index:02d}["asset_id"] != "SUMMARY"][
+    ["asset_id", "wer", "medical_term_f1", "negation_errors",
+     "laterality_errors", "number_errors", "requires_medical_review"]]
+''')
+
+for llm_key in _multimodal_llm:
+    _index += 1
+    md(f"### 7.{_index} — `multimodal`: `{llm_key}` (no STT stage)\n\n{_llm_comment[llm_key]}")
+    code(f'''
+PRECISION, CARDS = placement_for("{llm_key}")
+df_{_index:02d} = runner.run_one(
+    None, "{llm_key}", "multimodal", clips,
+    language=LANGUAGE, devices=DEVICES, precision=PRECISION, cards=CARDS,
+    preprocessing=PREPROCESSING, structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
+    max_new_tokens=MAX_NEW_TOKENS,
+    label="{_index:02d}_multimodal__{llm_key}__" + str(PREPROCESSING),
+)
+df_{_index:02d}[df_{_index:02d}["asset_id"] != "SUMMARY"][
     ["asset_id", "wer", "medical_term_f1", "negation_errors",
      "laterality_errors", "number_errors", "requires_medical_review"]]
 ''')

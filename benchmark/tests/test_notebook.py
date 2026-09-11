@@ -98,9 +98,10 @@ class TestItDependsOnACleanClone:
 
 
 class TestOneCellPerRun:
-    def test_run_cells_outnumber_the_pipelines_run_calls_by_exactly_that_many(self, notebook):
+    def test_run_cells_are_exactly_the_full_matrix(self, notebook):
+        """3 STT x 3 LLM (separate) + 3 LLM (multimodal, no STT stage) = 12."""
         run_cells = [c for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        assert len(run_cells) >= 3, "one cell per top-3 STT engine, at minimum"
+        assert len(run_cells) == 12
 
     def test_no_cell_loops_over_multiple_runs(self, notebook):
         """The whole point: a `for` loop calling run_one several times would
@@ -111,13 +112,31 @@ class TestOneCellPerRun:
             if "runner.run_one(" in source:
                 assert source.count("runner.run_one(") == 1
 
-    def test_each_run_cell_names_a_different_stt_engine(self, notebook):
+    def test_every_run_cell_writes_a_distinct_label(self, notebook):
+        """Several cells legitimately share an stt_key (3 LLMs per STT engine)
+        or an llm_key (3 STT engines, or the multimodal roster) -- what must
+        never collide is the CSV each cell writes, which the `label=` builds."""
+        import re
+
         run_cells = [source_of(c) for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        first_args = []
+        labels = []
         for source in run_cells:
+            match = re.search(r'label="([^"]+)"', source)
+            assert match, "run cell has no static label= prefix to check"
+            labels.append(match.group(1))
+        assert len(labels) == len(set(labels)), labels
+
+    def test_nine_separate_and_three_multimodal(self, notebook):
+        run_cells = [source_of(c) for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
+        separate = [s for s in run_cells if '"separate"' in s]
+        multimodal = [s for s in run_cells if '"multimodal"' in s]
+        assert len(separate) == 9
+        assert len(multimodal) == 3
+        # multimodal runs pass no STT engine -- the first positional arg is None.
+        for source in multimodal:
             start = source.index("runner.run_one(") + len("runner.run_one(")
-            first_args.append(source[start:source.index(",", start)].strip())
-        assert len(first_args) == len(set(first_args)), first_args
+            first_arg = source[start:source.index(",", start)].strip()
+            assert first_arg == "None"
 
 
 class TestItIsActuallyConnected:
@@ -168,9 +187,9 @@ class TestItIsActuallyConnected:
 
         results_dir = pathlib.Path(str(namespace["RESULTS_DIR"]))
         per_run_csvs = sorted(results_dir.glob("results__*.csv"))
-        assert len(per_run_csvs) == 3, "one CSV per top-3 STT engine"
+        assert len(per_run_csvs) == 12, "9 separate + 3 multimodal runs"
         assert (results_dir / "results_master.csv").is_file()
-        assert namespace["master"] is not None and len(namespace["master"]) == 3
+        assert namespace["master"] is not None and len(namespace["master"]) == 12
 
     def test_the_dataset_is_found_at_three_levels_of_nesting(self, notebook, tmp_path, monkeypatch):
         """The layout a zipped Kaggle Dataset actually produces: an extra

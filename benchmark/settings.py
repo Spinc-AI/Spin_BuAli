@@ -65,6 +65,7 @@ OUT_DIR = _default_out_dir()
 EVALUATION_DIR = pathlib.Path(os.getenv("EVALUATION_DIR", str(REPO_ROOT / "evaluation")))
 STT_DIR = pathlib.Path(os.getenv("STT_DIR", str(REPO_ROOT / "stt")))
 CONTROLLER_DIR = pathlib.Path(os.getenv("CONTROLLER_DIR", str(REPO_ROOT / "controller")))
+CORE_LLM_DIR = pathlib.Path(os.getenv("CORE_LLM_DIR", str(REPO_ROOT / "core_llm")))
 PREPROCESSING_DIR = pathlib.Path(
     os.getenv("PREPROCESSING_DIR", str(REPO_ROOT / "preprocessing")))
 

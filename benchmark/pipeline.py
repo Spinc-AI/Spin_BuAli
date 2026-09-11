@@ -8,11 +8,12 @@ Every prompt is imported from `controller/prompts.py`. None is written here.
 A benchmark that phrased the instruction its own way would be ranking models on
 a system nobody ships, and the difference would be invisible in the results.
 
-The three pipelines differ only in what the single LLM call is given:
+This benchmark runs two of the controller's three pipelines -- `hybrid` is
+still a production pipeline in `controller/pipelines.py`, just not part of
+this comparison:
 
     separate    transcripts, no audio    -> RECONCILE
     multimodal  audio, no transcripts    -> TRANSCRIBE_FROM_AUDIO
-    hybrid      audio AND transcripts    -> TRANSCRIBE_FROM_AUDIO
 
 which is `controller/pipelines.py`'s structure, kept deliberately parallel so
 the two can be read against each other.

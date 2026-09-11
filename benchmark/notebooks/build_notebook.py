@@ -285,7 +285,7 @@ controller's prompt exactly as production sends it.
 
 code("""
 LLM_KEY = "aya-expanse-8b"     # any key in plan.LLM_PARAMS -- see cell 3's placement table
-PIPELINE = "separate"          # separate | multimodal | hybrid
+PIPELINE = "separate"          # separate | multimodal
 LANGUAGE = "fa"
 DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other free
 
@@ -315,9 +315,9 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── 7. Runs ──────────────────────────────────────────────────────────────
 md("""
-## 7 — Runs: the top 5 STT engines, solo
+## 7 — Runs: the top 3 STT engines, solo
 
-`runner.TOP5_STT` is the five models named in `docs/STT_Models.pdf`, in that
+`runner.TOP3_STT` is the three models named in `docs/STT_Models.pdf`, in that
 document's own rank order. Each is its own cell.
 
 **To add a run:** copy a cell, change `stt_key` (or pass `None` for
@@ -325,7 +325,7 @@ document's own rank order. Each is its own cell.
 `LLM_KEY` / `PIPELINE` in the cell above and re-run — no cell below needs
 editing, since they all read those variables.
 
-**Speech recognition is cached.** Changing `LLM_KEY` and re-running these five
+**Speech recognition is cached.** Changing `LLM_KEY` and re-running these
 cells does not re-transcribe anything — the cache key is `(preprocessing,
 stt_key)` only, so it does not care which LLM or pipeline asked for it. A cell
 that reused a cached transcript prints `-- cached, skipping transcription` and
@@ -334,14 +334,11 @@ its CSV's `stt_cached` column is `True`. The cache lives in
 redone, or pass `use_cache=False` to force every call in a cell to redo it.
 """)
 
-for index, stt_key in enumerate(
-        ["seamless", "seamless-medium", "whisper", "mms-fl102", "whisper-vhdm"], start=1):
+for index, stt_key in enumerate(["seamless", "seamless-medium", "whisper"], start=1):
     checkpoint_comment = {
         "seamless": "facebook/seamless-m4t-v2-large -- WER 0.107 in the PDF",
         "seamless-medium": "facebook/hf-seamless-m4t-medium -- WER 0.134",
         "whisper": "nezamisafa/whisper-persian-v4 -- WER 0.137",
-        "mms-fl102": "facebook/mms-1b-fl102 -- WER 0.146, in-domain/optimistic, see the PDF",
-        "whisper-vhdm": "vhdm/whisper-large-fa-v1 -- WER 0.150",
     }[stt_key]
     md(f"### 7.{index} — `{stt_key}`\n\n{checkpoint_comment}")
     code(f'''

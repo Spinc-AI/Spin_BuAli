@@ -79,14 +79,14 @@ T4 ×2** and **Internet → On**, then run the cells in order:
 4. **Config** — `LLM_KEY`, `PIPELINE`, `STRUCTURE_GUIDE` in one place; every
    run cell reads these, so trying a different model means editing one cell,
    not five.
-5. **Runs** — one cell per STT engine (the top 5 from `docs/STT_Models.pdf`).
+5. **Runs** — one cell per STT engine (the top 3 from `docs/STT_Models.pdf`).
    Copy a cell to add another engine, LLM, or pipeline.
 6. **Master** — merges every `results__*.csv` present into one sorted table.
    Safe to run after any subset of the run cells.
 
-## The top 5 STT engines
+## The top 3 STT engines
 
-`runner.TOP5_STT`, in the rank order `docs/STT_Models.pdf` measured on FLEURS
+`runner.TOP3_STT`, in the rank order `docs/STT_Models.pdf` measured on FLEURS
 fa_ir:
 
 | Key | Checkpoint | WER (PDF) |
@@ -94,12 +94,11 @@ fa_ir:
 | `seamless` | facebook/seamless-m4t-v2-large | 0.107 |
 | `seamless-medium` | facebook/hf-seamless-m4t-medium | 0.134 |
 | `whisper` | nezamisafa/whisper-persian-v4 | 0.137 |
-| `mms-fl102` | facebook/mms-1b-fl102 | 0.146 — in-domain, optimistic; see the PDF |
-| `whisper-vhdm` | vhdm/whisper-large-fa-v1 | 0.150 |
 
-The other five registered models (stock Whisper below large-v3, wav2vec2,
-mms-1b-all, whisper-halakoo, whisper-large-v3, whisper-large-v3-turbo) are not
-run here because that PDF already showed they lose on this language.
+The other seven registered models (mms-fl102, whisper-vhdm, stock Whisper
+below large-v3, wav2vec2, mms-1b-all, whisper-halakoo, whisper-large-v3,
+whisper-large-v3-turbo) are not run here because that PDF already showed they
+lose on this language.
 
 ## The report-structure addendum
 

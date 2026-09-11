@@ -41,17 +41,16 @@ class FakeLLM:
                            "final_text": final})
 
 
-class TestTop5:
-    def test_it_is_exactly_five_real_registry_keys(self):
-        """The bug this pins: TOP5_STT once held descriptive names instead of
+class TestTop3:
+    def test_it_is_exactly_three_real_registry_keys(self):
+        """The bug this pins: the list once held descriptive names instead of
         the registry's actual keys, which would have failed at load time on
         every one of them."""
-        assert len(runner.TOP5_STT) == 5
-        assert len(set(runner.TOP5_STT)) == 5
+        assert len(runner.TOP3_STT) == 3
+        assert len(set(runner.TOP3_STT)) == 3
 
     def test_the_keys_match_the_pdf_s_rank_order(self):
-        assert runner.TOP5_STT == [
-            "seamless", "seamless-medium", "whisper", "mms-fl102", "whisper-vhdm"]
+        assert runner.TOP3_STT == ["seamless", "seamless-medium", "whisper"]
 
 
 class TestRunOne:
@@ -121,13 +120,13 @@ class TestRunOne:
         assert all("Benchmark note" in call for call in model.calls)
 
     def test_stt_and_llm_columns_are_stamped_on_every_row(self, items, factory, tmp_path):
-        frame = runner.run_one("whisper", "fake-llm", "hybrid", items, devices=["cpu"],
+        frame = runner.run_one("whisper", "fake-llm", "multimodal", items, devices=["cpu"],
                                model_factory=factory,
                                llm_factory=lambda key, **kw: FakeLLM("x"),
                                results_dir=tmp_path)
         assert set(frame["stt_model"]) == {"whisper"}
         assert set(frame["llm_model"]) == {"fake-llm"}
-        assert set(frame["pipeline"]) == {"hybrid"}
+        assert set(frame["pipeline"]) == {"multimodal"}
 
 
 class TestBuildMaster:
@@ -297,7 +296,7 @@ class TestTranscriptCaching:
         assert cache_path.is_file()
 
         frame = runner.run_one(
-            "whisper", "fake-llm-two", "hybrid", items, preprocessing="adaptive",
+            "whisper", "fake-llm-two", "multimodal", items, preprocessing="adaptive",
             llm_factory=lambda key, **kw: FakeLLM("second"), results_dir=tmp_path)
         assert set(frame["stt_cached"]) == {True}
 

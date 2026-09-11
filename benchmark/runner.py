@@ -37,18 +37,17 @@ import scoring
 import settings
 import transcribe
 
-# The five models named in docs/STT_Models.pdf, in that document's own rank
-# order (lowest WER first) on the FLEURS fa_ir benchmark. Keys are
+# The three lowest-WER models named in docs/STT_Models.pdf, in that
+# document's own rank order, on the FLEURS fa_ir benchmark. Keys are
 # stt/app/config.py's MODEL_REGISTRY keys, not the checkpoint names -- the
-# registry has ten entries; the other five (whisper-halakoo, mms-all,
-# wav2vec2-xlsr53, whisper-large-v3, whisper-large-v3-turbo, and stock Whisper
-# below large-v3) are not run here because that PDF already showed they lose.
-TOP5_STT = [
+# registry has ten entries; the other seven (mms-fl102, whisper-vhdm,
+# whisper-halakoo, mms-all, wav2vec2-xlsr53, whisper-large-v3,
+# whisper-large-v3-turbo, and stock Whisper below large-v3) are not run here
+# because that PDF already showed they lose.
+TOP3_STT = [
     "seamless",         # facebook/seamless-m4t-v2-large      WER 0.107
     "seamless-medium",  # facebook/hf-seamless-m4t-medium     WER 0.134
     "whisper",          # nezamisafa/whisper-persian-v4       WER 0.137
-    "mms-fl102",        # facebook/mms-1b-fl102               WER 0.146 (in-domain, optimistic -- see the PDF)
-    "whisper-vhdm",     # vhdm/whisper-large-fa-v1            WER 0.150
 ]
 
 

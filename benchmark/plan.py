@@ -34,7 +34,7 @@ LLM_PARAMS = {
 }
 
 # Which local LLMs can take audio. `separate` sends text only, so it can use
-# any of them; `multimodal` and `hybrid` cannot.
+# any of them; `multimodal` cannot.
 AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b"}
 
 # Preprocessing variants, as (id, description). Chunking is what actually
@@ -47,7 +47,7 @@ PREPROCESSING = {
     "fixed": "strict target-length windows",
 }
 
-PIPELINES = ("separate", "multimodal", "hybrid")
+PIPELINES = ("separate", "multimodal")
 
 
 def cloud_llms(models: list[str] | None) -> list[str]:

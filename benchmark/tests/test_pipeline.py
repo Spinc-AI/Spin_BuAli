@@ -85,11 +85,11 @@ class TestItUsesTheProductionPrompt:
         user = model.calls[0]["user"]
         assert "STT engine 1 transcript" in user and "STT engine 2 transcript" in user
 
-    def test_hybrid_calls_its_transcripts_fallible(self):
+    def test_multimodal_calls_its_transcripts_fallible(self):
         """Reference material, not ground truth -- it changes what the model
         does with a disagreement."""
         model = FakeLLM()
-        pipeline.build_report("A1", {"transcript_1": "x"}, model, "hybrid")
+        pipeline.build_report("A1", {"transcript_1": "x"}, model, "multimodal")
         assert "may contain errors" in model.calls[0]["user"]
 
     def test_slot_order_follows_the_number_not_the_string(self):

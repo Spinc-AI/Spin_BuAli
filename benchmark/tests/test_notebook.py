@@ -100,7 +100,7 @@ class TestItDependsOnACleanClone:
 class TestOneCellPerRun:
     def test_run_cells_outnumber_the_pipelines_run_calls_by_exactly_that_many(self, notebook):
         run_cells = [c for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        assert len(run_cells) >= 5, "one cell per top-5 STT engine, at minimum"
+        assert len(run_cells) >= 3, "one cell per top-3 STT engine, at minimum"
 
     def test_no_cell_loops_over_multiple_runs(self, notebook):
         """The whole point: a `for` loop calling run_one several times would
@@ -168,9 +168,9 @@ class TestItIsActuallyConnected:
 
         results_dir = pathlib.Path(str(namespace["RESULTS_DIR"]))
         per_run_csvs = sorted(results_dir.glob("results__*.csv"))
-        assert len(per_run_csvs) == 5, "one CSV per top-5 STT engine"
+        assert len(per_run_csvs) == 3, "one CSV per top-3 STT engine"
         assert (results_dir / "results_master.csv").is_file()
-        assert namespace["master"] is not None and len(namespace["master"]) == 5
+        assert namespace["master"] is not None and len(namespace["master"]) == 3
 
     def test_the_dataset_is_found_at_three_levels_of_nesting(self, notebook, tmp_path, monkeypatch):
         """The layout a zipped Kaggle Dataset actually produces: an extra

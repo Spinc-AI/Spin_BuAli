@@ -43,23 +43,32 @@ class Report:
                 "error": self.error, **self.transcripts}
 
 
-def reconcile_prompt(transcripts: dict[str, str], structure_guide: str | None = None) -> tuple[str, str]:
+def reconcile_prompt(transcripts: dict[str, str], structure_guide: str | None = None,
+                     context: str | None = None) -> tuple[str, str]:
     """`separate`: several engines' transcripts, no audio.
 
     Labelled by slot number rather than concatenated, because the prompt asks
     the model to weigh them against each other and it cannot do that if it
     cannot tell where one ends.
+
+    `context` (from `context_labels.context_line`) goes in right after the
+    base prompt, before `structure_guide` -- it sets expectations about what
+    the recording covers; the structure guide, about how to format the
+    answer, stays closest to where the model starts generating.
     """
     user_text = "\n\n".join(
         f"STT engine {key.removeprefix('transcript_')} transcript:\n{text}"
         for key, text in _in_slot_order(transcripts))
     system = bridge.with_template(bridge.RECONCILE)
+    if context:
+        system = f"{system}\n\n{context}"
     if structure_guide:
         system = f"{system}\n\n{structure_guide}"
     return system, user_text
 
 
-def audio_prompt(transcripts: dict[str, str], structure_guide: str | None = None) -> tuple[str, str | None]:
+def audio_prompt(transcripts: dict[str, str], structure_guide: str | None = None,
+                 context: str | None = None) -> tuple[str, str | None]:
     """`multimodal` / `hybrid`: the model hears the recording.
 
     Any transcripts go in as cross-check material and are labelled as
@@ -74,6 +83,8 @@ def audio_prompt(transcripts: dict[str, str], structure_guide: str | None = None
             f"may contain errors):\n{text}"
             for position, (_, text) in enumerate(_in_slot_order(transcripts), start=1))
     system = bridge.with_template(bridge.TRANSCRIBE_FROM_AUDIO)
+    if context:
+        system = f"{system}\n\n{context}"
     if structure_guide:
         system = f"{system}\n\n{structure_guide}"
     return system, user_text
@@ -96,7 +107,8 @@ def _snippet(reply: str, head: int = 200, tail: int = 200) -> str:
 
 
 def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: str,
-                 structure_guide: str | None = None, audio_path=None) -> Report:
+                 structure_guide: str | None = None, audio_path=None,
+                 context: str | None = None) -> Report:
     """One LLM call, parsed into a report.
 
     `structure_guide` is a benchmark-only addendum -- never part of
@@ -106,6 +118,11 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
     template, not free-form text, so a model that says the same things in a
     different order should not be marked wrong for that alone. See
     `report_structure.py`.
+
+    `context` (from `context_labels.context_line`) is the recording's known
+    modality/region, when the dataset has it -- also benchmark-only, for the
+    same reason `structure_guide` is: it is metadata about a specific labelled
+    dataset, not something every caller of `controller/prompts.py` has.
 
     `audio_path` is the recording itself, only meaningful (and only ever
     passed) for `multimodal` -- `separate` reconciles transcripts and never
@@ -124,11 +141,11 @@ def build_report(asset_id: str, transcripts: dict[str, str], model, pipeline: st
             if audio_path:
                 raise ValueError("separate reconciles transcripts, not audio -- "
                                  "audio_path should not be set for this pipeline")
-            system_prompt, user_text = reconcile_prompt(transcripts, structure_guide)
+            system_prompt, user_text = reconcile_prompt(transcripts, structure_guide, context)
         else:
             if not audio_path:
                 raise ValueError(f"{pipeline} needs the recording; audio_path was not given")
-            system_prompt, user_text = audio_prompt(transcripts, structure_guide)
+            system_prompt, user_text = audio_prompt(transcripts, structure_guide, context)
 
         reply = model.generate(system_prompt, user_text, audio_path=audio_path)
         parsed = bridge.extract_json(reply)
@@ -153,18 +170,30 @@ def build_reports(transcripts_by_asset: dict[str, dict[str, str]], model, pipeli
     report, so the batch is what the load is amortised over.
 
     `items` is the dataset entries this batch covers -- `dataset.Item`, each
-    with an `.audio` path -- needed only for `separate` != pipeline (i.e.
-    `multimodal`), which sends the recording itself rather than a transcript.
-    `separate` never reads `items`, so passing `None` there (the default) is
-    fine; a non-`separate` pipeline without `items` fails per-recording in
+    with an `.audio` path -- needed for `multimodal`, which sends the
+    recording itself rather than a transcript. `separate` never reads
+    `items`'s audio, so passing `None` there (the default) is fine; a
+    non-`separate` pipeline without `items` fails per-recording in
     `build_report`, not silently.
+
+    `items` also supplies each recording's modality/region context (see
+    `context_labels.context_line`), for *both* pipelines -- unlike the audio
+    path, knowing what kind of study this is helps `separate` too, since it
+    only ever sees the transcript.
     """
-    audio_by_asset = {item.asset_id: item.audio for item in items} if items else {}
+    import context_labels
+
+    audio_by_asset = {}
+    context_by_asset = {}
+    for item in items or []:
+        audio_by_asset[item.asset_id] = item.audio
+        context_by_asset[item.asset_id] = context_labels.context_line(item.modality, item.regions)
+
     reports = []
     for asset_id, transcripts in transcripts_by_asset.items():
         audio_path = audio_by_asset.get(asset_id) if pipeline != "separate" else None
         report = build_report(asset_id, transcripts, model, pipeline, structure_guide,
-                              audio_path=audio_path)
+                              audio_path=audio_path, context=context_by_asset.get(asset_id))
         reports.append(report)
         if on_progress:
             on_progress(report)

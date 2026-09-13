@@ -124,6 +124,20 @@ class TestItUsesTheProductionPrompt:
         user = model.calls[0]["user"]
         assert user.index("second") < user.index("tenth")
 
+    def test_context_reaches_the_system_prompt(self):
+        """Modality/region context sits between the base prompt and the
+        structure guide -- see reconcile_prompt's docstring for why that
+        order."""
+        model = FakeLLM()
+        pipeline.build_report("A1", {"transcript_1": "x"}, model, "separate",
+                              context="Modality: Ultrasound.")
+        assert "Modality: Ultrasound." in model.calls[0]["system"]
+
+    def test_no_context_means_no_context_line(self):
+        model = FakeLLM()
+        pipeline.build_report("A1", {"transcript_1": "x"}, model, "separate")
+        assert "Modality" not in model.calls[0]["system"]
+
 
 class TestParsingTheReply:
     def test_a_fenced_reply_is_still_read(self):
@@ -172,6 +186,22 @@ class TestParsingTheReply:
             {"A1": {"transcript_1": "x"}, "A2": {"transcript_1": "y"}},
             FakeLLM(fail=True), "separate")
         assert len(reports) == 2 and all(r.error for r in reports)
+
+    def test_build_reports_derives_context_from_items(self):
+        """Unlike audio_path, context reaches `separate` too -- items carries
+        it because that's where modality/regions live (dataset.Item), not
+        because separate needs the audio."""
+        model = FakeLLM()
+        items = [Item("A1", pathlib.Path("A1.wav"), "ref", modality="Ultrasound",
+                      regions=("Abdomen", "Pelvis"))]
+        pipeline.build_reports({"A1": {"transcript_1": "x"}}, model, "separate", items=items)
+        assert "Modality: Ultrasound." in model.calls[0]["system"]
+        assert "Region(s) examined: Abdomen, Pelvis." in model.calls[0]["system"]
+
+    def test_build_reports_without_items_has_no_context(self):
+        model = FakeLLM()
+        pipeline.build_reports({"A1": {"transcript_1": "x"}}, model, "separate")
+        assert "Modality" not in model.calls[0]["system"]
 
 
 class TestScoringTheReport:

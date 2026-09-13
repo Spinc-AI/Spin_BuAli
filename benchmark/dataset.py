@@ -22,10 +22,22 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm", "
 
 @dataclass(frozen=True)
 class Item:
-    """One recording, and the text it should have produced."""
+    """One recording, and the text it should have produced.
+
+    `modality` and `regions` are known context about the recording -- what
+    kind of study it is and what body regions it covers -- not something a
+    model has to infer from the audio alone. Both are optional: most datasets
+    will not have them, and a run over unlabelled recordings should not need
+    them either. See `docs/taxonomy/modalities.csv` and `body_regions.csv`
+    for the reference vocabulary; nothing here enforces a value came from
+    that list, since a caller may be tagging data faster than the taxonomy
+    can be extended to match.
+    """
     asset_id: str
     audio: pathlib.Path
     reference: str | None = None
+    modality: str | None = None
+    regions: tuple[str, ...] = ()
 
     @property
     def labelled(self):
@@ -42,7 +54,13 @@ def from_json(manifest_path):
 
         [{"asset_id": "DPM89130",
           "audio": "audio/DPM89130.mp3",
-          "reference": "truth/DPM89130.txt"}]
+          "reference": "truth/DPM89130.txt",
+          "modality": "Ultrasound",
+          "regions": ["Abdomen", "Pelvis", "Retroperitoneum"]}]
+
+    `modality` and `regions` are both optional; a manifest without them
+    produces items with `modality=None, regions=()`, same as `Item`'s own
+    defaults.
     """
     manifest_path = pathlib.Path(manifest_path)
     base = manifest_path.parent
@@ -55,11 +73,14 @@ def from_json(manifest_path):
             asset_id=entry.get("asset_id") or audio.stem,
             audio=audio,
             reference=_read_reference(entry.get("reference"), base),
+            modality=(entry.get("modality") or "").strip() or None,
+            regions=tuple(entry.get("regions") or ()),
         ))
     return items
 
 
-def from_csv(csv_path, audio_column="audio", reference_column="report"):
+def from_csv(csv_path, audio_column="audio", reference_column="report",
+            modality_column="modality", region_column="region"):
     """Read a dataset's `labels.csv`.
 
     One row per recording, with the label in a column rather than a file of its
@@ -68,6 +89,13 @@ def from_csv(csv_path, audio_column="audio", reference_column="report"):
 
     `utf-8-sig` because these files are written for Excel and carry a BOM; the
     plain utf-8 reader would fold it into the first column name.
+
+    `modality_column`/`region_column` are read if present; a `labels.csv`
+    without them (most will not have them yet) produces items with
+    `modality=None, regions=()`, same as `Item`'s own defaults. Multiple
+    regions in one cell are semicolon-separated -- a single recording
+    routinely covers more than one region (see `docs/taxonomy/body_regions.csv`),
+    while a recording is always exactly one modality.
     """
     csv_path = pathlib.Path(csv_path)
     base = csv_path.parent
@@ -76,8 +104,12 @@ def from_csv(csv_path, audio_column="audio", reference_column="report"):
         for row in csv.DictReader(handle):
             audio = (base / row[audio_column]).resolve()
             reference = (row.get(reference_column) or "").strip() or None
+            modality = (row.get(modality_column) or "").strip() or None
+            regions = tuple(r.strip() for r in (row.get(region_column) or "").split(";")
+                            if r.strip())
             items.append(Item(asset_id=row.get("asset_id") or audio.stem,
-                              audio=audio, reference=reference))
+                              audio=audio, reference=reference,
+                              modality=modality, regions=regions))
     return items
 
 

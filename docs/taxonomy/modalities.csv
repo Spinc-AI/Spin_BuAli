@@ -1,0 +1,34 @@
+id,name,category,description
+XR,X-ray / Plain Radiography,Radiography,Conventional projection radiography
+FL,Fluoroscopy,Radiography,"Real-time X-ray; covers barium studies, VCUG, HSG, sialography, arthrography, myelography, sinography/fistulography, loopogram, defecography"
+CT,CT (Computed Tomography),Cross-sectional,General computed tomography
+CTA,CT Angiography,Cross-sectional,Contrast-enhanced CT of vasculature
+CCTA,Cardiac CT / Coronary CTA,Cross-sectional,Cardiac-gated CT for coronary/cardiac assessment
+CTC,CT Colonography,Cross-sectional,Virtual colonoscopy
+CTP,CT Perfusion,Cross-sectional,Perfusion-weighted CT (stroke, tumor workup)
+CBCT,Cone Beam CT,Cross-sectional,"Lower-dose volumetric CT, common in dental/maxillofacial and IR"
+MR,MRI (Magnetic Resonance Imaging),Cross-sectional,General magnetic resonance imaging
+MRA,MR Angiography,Cross-sectional,Contrast or flow-based MR of vasculature
+CMR,Cardiac MRI,Cross-sectional,Cardiac-gated MRI
+MRP,MR Perfusion,Cross-sectional,Perfusion-weighted MRI
+MRS,MR Spectroscopy,Cross-sectional,Metabolite analysis via MR
+FMRI,Functional MRI,Cross-sectional,BOLD/task-based functional MRI
+US,Ultrasound (grayscale),Ultrasound,Conventional B-mode sonography
+USD,Doppler Ultrasound,Ultrasound,Color/spectral Doppler flow assessment
+CEUS,Contrast-Enhanced Ultrasound,Ultrasound,Microbubble contrast sonography
+USE,Elastography,Ultrasound,Tissue stiffness assessment (US-based)
+ECHO,Echocardiography,Ultrasound,Cardiac ultrasound
+MG,Mammography,Breast Imaging,2D X-ray mammography
+DBT,Digital Breast Tomosynthesis,Breast Imaging,3D mammographic imaging
+NM,Nuclear Medicine (general scintigraphy),Nuclear,"Bone scan, HIDA, renal scan, V/Q scan, thyroid scan, gastric emptying, tagged RBC, etc."
+MPI,Myocardial Perfusion Imaging,Nuclear,Nuclear cardiology stress/rest perfusion study
+PET,PET,Nuclear,Positron emission tomography
+PETCT,PET/CT,Nuclear,Hybrid PET and CT
+PETMR,PET/MRI,Nuclear,Hybrid PET and MRI
+SPECT,SPECT / SPECT-CT,Nuclear,Single-photon emission CT, with or without CT fusion
+DEXA,Bone Densitometry (DEXA/DXA),Other,Bone mineral density scan
+ANGIO,Angiography (Catheter-based / DSA),Interventional,Digital subtraction angiography
+IR,Interventional Radiology (procedural),Interventional,"Image-guided biopsy, drainage, ablation, embolization, vertebroplasty/kyphoplasty, vascular access, pain procedures -- see notes for sub-typing by procedure"
+DENT,Panoramic / Dental Radiography,Radiography,"OPG, cephalometric, intraoral -- only if dental imaging is in scope"
+RTSIM,Radiation Therapy Simulation CT,Cross-sectional,CT acquired for radiotherapy planning -- only if RT planning imaging is in scope
+OTHER,Other / Unclassified,Other,Fallback for a modality not yet in this registry -- flag for review, do not silently drop

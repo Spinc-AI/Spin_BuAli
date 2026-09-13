@@ -67,6 +67,70 @@ class TestFromJson:
         assert items[0].audio.is_file()
         assert items[0].asset_id == "A1", "asset_id defaults to the filename stem"
 
+    def test_modality_and_regions_are_read_when_present(self, tmp_path):
+        sf.write(str(tmp_path / "A1.wav"), np.zeros(16000, np.float32), 16000)
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(json.dumps([
+            {"asset_id": "A1", "audio": "A1.wav", "modality": "Ultrasound",
+             "regions": ["Abdomen", "Pelvis"]},
+        ]), encoding="utf-8")
+
+        items = dataset.from_json(manifest)
+        assert items[0].modality == "Ultrasound"
+        assert items[0].regions == ("Abdomen", "Pelvis")
+
+    def test_modality_and_regions_default_to_empty_when_absent(self, tmp_path):
+        """Most manifests will not have these yet -- absence must not error."""
+        sf.write(str(tmp_path / "A1.wav"), np.zeros(16000, np.float32), 16000)
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text(json.dumps([{"asset_id": "A1", "audio": "A1.wav"}]), encoding="utf-8")
+
+        items = dataset.from_json(manifest)
+        assert items[0].modality is None
+        assert items[0].regions == ()
+
+
+class TestFromCsv:
+    def _write_csv(self, tmp_path, header, *rows):
+        import csv
+
+        path = tmp_path / "labels.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+
+    def test_modality_and_region_are_read_when_present(self, tmp_path):
+        sf.write(str(tmp_path / "A1.wav"), np.zeros(16000, np.float32), 16000)
+        csv_path = self._write_csv(
+            tmp_path, ["asset_id", "audio", "report", "modality", "region"],
+            ["A1", "A1.wav", "the liver is normal", "Ultrasound", "Abdomen;Pelvis;Retroperitoneum"])
+
+        items = dataset.from_csv(csv_path)
+        assert items[0].modality == "Ultrasound"
+        assert items[0].regions == ("Abdomen", "Pelvis", "Retroperitoneum")
+
+    def test_a_csv_without_those_columns_still_loads(self, tmp_path):
+        """The columns are new -- most labels.csv files, including this
+        one until now, do not have them."""
+        sf.write(str(tmp_path / "A1.wav"), np.zeros(16000, np.float32), 16000)
+        csv_path = self._write_csv(
+            tmp_path, ["asset_id", "audio", "report"], ["A1", "A1.wav", "the liver is normal"])
+
+        items = dataset.from_csv(csv_path)
+        assert items[0].modality is None
+        assert items[0].regions == ()
+
+    def test_a_blank_region_cell_is_no_regions_not_one_empty_region(self, tmp_path):
+        sf.write(str(tmp_path / "A1.wav"), np.zeros(16000, np.float32), 16000)
+        csv_path = self._write_csv(
+            tmp_path, ["asset_id", "audio", "report", "modality", "region"],
+            ["A1", "A1.wav", "text", "Ultrasound", ""])
+
+        items = dataset.from_csv(csv_path)
+        assert items[0].regions == ()
+
 
 class TestDescribe:
     def test_counts_labelled_and_missing(self, tmp_path):

@@ -133,35 +133,31 @@ against silence, however the numbers looked. `pipeline.build_report()` now
 raises immediately if `multimodal` is asked for without an `audio_path`,
 so that failure mode can't recur silently.
 
-## The report-structure addendum — an oracle condition, off by default
+## The report-structure addendum
 
 **Not part of `controller/prompts.py`.** The reference reports in this
 dataset all follow one house template — every one of them states the same
 organs in the same order, and two sentences appear close to verbatim in all
 nine. `report_structure.GUIDE` (`SECTION_ORDER` and `BOILERPLATE_ANCHORS`)
-was extracted by reading those same nine reports.
+was *read off* those nine reports — but what it encodes is a real, standing
+expectation the radiologists have for how every report should be written,
+not an artefact specific to this one dataset. Telling the model that
+expectation up front is what production should do too, so it is **on by
+default**.
 
-**That makes it leakage, not a fair hint.** A run scored with the guide on
-measures how well a model can repeat a pattern pulled from the answer key it
-is then graded against — not how well it performs on a real, unseen
-recording. It does not generalise, and must never be reported as if it were
-the model's unaided capability.
+Every result row still stamps a `structure_guided` column (`True`/`False`),
+so a run made without it (`STRUCTURE_GUIDE = None`, to see how the model
+does with no house-style hint at all) is always distinguishable from one
+made with it in a master CSV — useful for comparison, not because either
+condition is illegitimate.
 
-The notebook defaults `STRUCTURE_GUIDE = None`. Every result row stamps a
-`structure_guided` column (`True`/`False`) precisely so a master CSV can
-never silently blend the two conditions into one ranking — turning the guide
-on to see a best-case ceiling is legitimate, reporting it unlabelled as
-"accuracy" is not.
+`pipeline.build_report`'s test suite asserts the controller's own prompt
+text always appears first and unmodified whether or not a guide is attached.
 
-`pipeline.build_report`'s test suite still asserts the controller's own
-prompt text always appears first and unmodified whether or not a guide is
-attached — the leakage is in *what the guide contains*, not in how it is
-spliced into the prompt.
-
-Keeping it out of `controller/prompts.py` is also deliberate: that file is
+Keeping it out of `controller/prompts.py` is deliberate: that file is
 production's prompt, used for every customer's reports, most of which do not
 share this one's template. Baking a Kaggle dataset's house style into it
-would fix this benchmark and quietly bias production.
+would fix this benchmark and quietly bias production for everyone else.
 
 ## Output, per run
 

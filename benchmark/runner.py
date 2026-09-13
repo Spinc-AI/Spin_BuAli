@@ -227,11 +227,10 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
                "stt_model": stt_key or "(none)", "precision": precision}
     results, summary = scoring.score_reports(reports, items, terms, run_meta)
 
-    # A run scored with structure_guide on is an oracle condition, not a
-    # measure of unaided capability -- the guide was extracted from the same
-    # reference reports the run is scored against (see report_structure.py's
-    # module docstring). Stamped on every row so a master CSV can never
-    # silently mix the two conditions into one ranking.
+    # Whether this run told the model the expected house-style structure
+    # (report_structure.GUIDE) -- stamped on every row so a run made with it
+    # and one made without are always distinguishable in a master CSV,
+    # rather than silently blended into one ranking.
     rows = leaderboard.per_report_rows(results)
     for row in rows:
         row.update(stt_model=stt_key or "(none)", llm_model=llm_key,

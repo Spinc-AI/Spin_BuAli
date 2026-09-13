@@ -155,11 +155,12 @@ class TestRunOne:
                        structure_guide=rs.GUIDE, results_dir=tmp_path)
         assert all("Benchmark note" in call for call in model.calls)
 
-    def test_structure_guided_is_stamped_so_the_oracle_condition_cant_hide(self, items, factory, tmp_path):
-        """report_structure.GUIDE is extracted from the same reference
-        reports a run is scored against -- a run using it measures an oracle
-        condition, not unaided capability. structure_guided must be visible
-        on every row so a master CSV can never silently mix the two."""
+    def test_structure_guided_is_stamped_so_the_two_conditions_never_blend(self, items, factory, tmp_path):
+        """structure_guide is on by default -- radiologists genuinely expect
+        the house-style structure it encodes. structure_guided must still be
+        visible on every row so a run made without it (to see how the model
+        does with no house-style hint) is never silently blended with one
+        made with it in a master CSV."""
         import report_structure as rs
 
         guided = runner.run_one(

@@ -227,11 +227,16 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
                "stt_model": stt_key or "(none)", "precision": precision}
     results, summary = scoring.score_reports(reports, items, terms, run_meta)
 
+    # A run scored with structure_guide on is an oracle condition, not a
+    # measure of unaided capability -- the guide was extracted from the same
+    # reference reports the run is scored against (see report_structure.py's
+    # module docstring). Stamped on every row so a master CSV can never
+    # silently mix the two conditions into one ranking.
     rows = leaderboard.per_report_rows(results)
     for row in rows:
         row.update(stt_model=stt_key or "(none)", llm_model=llm_key,
                    pipeline=pipeline_name, precision=precision, preprocessing=prep_label,
-                   stt_cached=stt_cached)
+                   stt_cached=stt_cached, structure_guided=bool(structure_guide))
 
     frame = pd.DataFrame(rows)
     elapsed = time.perf_counter() - started
@@ -240,7 +245,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
         summary_row.update(
             asset_id="SUMMARY", stt_model=stt_key or "(none)", llm_model=llm_key,
             pipeline=pipeline_name, precision=precision, preprocessing=prep_label,
-            stt_cached=stt_cached,
+            stt_cached=stt_cached, structure_guided=bool(structure_guide),
             stt_load_seconds=round(stt_run.load_seconds, 1) if stt_run else 0.0,
             llm_load_seconds=round(load_seconds, 1),
             peak_vram_gb=round(peak_vram, 2),
@@ -311,7 +316,7 @@ def build_master(results_dir=None, pattern: str = "results__*.csv"):
     master.to_csv(master_path, encoding="utf-8-sig")
     print(f"\nmaster results -> {master_path}\n")
 
-    columns = [c for c in ("stt_model", "llm_model", "pipeline", "precision",
+    columns = [c for c in ("stt_model", "llm_model", "pipeline", "precision", "structure_guided",
                            "corpus_wer", "medical_term_f1", "negation_error_rate",
                            "laterality_error_rate", "number_error_rate",
                            "unit_error_rate", "review_rate", "peak_vram_gb")

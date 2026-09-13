@@ -277,11 +277,19 @@ addendum, the token cap, and where results land. The STT and LLM rosters
 themselves are fixed (`runner.TOP3_STT`, `runner.TOP3_LLM`,
 `runner.MULTIMODAL_LLM`); see cell 7 for why each list holds what it holds.
 
-**The addendum is not part of `controller/prompts.py`.** It tells the model
-the section order this dataset's reference reports use, because this
-benchmark scores the combined STT+LLM output against one house template, not
-free text -- see `report_structure.py`. Set it to `None` to score the
-controller's prompt exactly as production sends it.
+**The addendum is not part of `controller/prompts.py`, and defaults off.**
+`report_structure.GUIDE` was extracted by reading the *same nine reference
+reports* every run is scored against -- `SECTION_ORDER` is their organ
+sequence, and `BOILERPLATE_ANCHORS` are two of their sentences, near
+verbatim. A run using it is an **oracle condition**: it measures how well a
+model can repeat a hint pulled from the answer key, not how well it performs
+unaided. That number does not generalise to a real, unseen recording, and
+must never be reported as if it does.
+
+Left `None` below for exactly that reason. Every result row stamps
+`structure_guided` (`True`/`False`) so a master CSV can never silently mix
+the two conditions into one ranking -- if you turn this on to see the
+best-case ceiling, keep it labelled as one.
 """)
 
 code("""
@@ -295,7 +303,7 @@ DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other 
 PREPROCESSING = "adaptive"     # None | "fixed" | "uniform" | "adaptive" | "adaptive-vad"
 print("preprocessing options:", {**plan.PREPROCESSING, None: "fixed windows, no chunking module"})
 
-STRUCTURE_GUIDE = report_structure.GUIDE   # or None to score the bare controller prompt
+STRUCTURE_GUIDE = None   # report_structure.GUIDE for the oracle condition -- see cell 6's note above
 
 # The `separate` pipeline asks for three full fields (raw_transcript,
 # corrected_transcript, final_text) -- easy to overrun the 1536-token default

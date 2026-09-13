@@ -133,21 +133,32 @@ against silence, however the numbers looked. `pipeline.build_report()` now
 raises immediately if `multimodal` is asked for without an `audio_path`,
 so that failure mode can't recur silently.
 
-## The report-structure addendum
+## The report-structure addendum — an oracle condition, off by default
 
 **Not part of `controller/prompts.py`.** The reference reports in this
 dataset all follow one house template — every one of them states the same
 organs in the same order, and two sentences appear close to verbatim in all
-nine. This benchmark measures the *combined* STT+LLM output against that
-fixed structure, so `report_structure.GUIDE` tells the model what order to
-use, appended after the controller's own JSON template.
+nine. `report_structure.GUIDE` (`SECTION_ORDER` and `BOILERPLATE_ANCHORS`)
+was extracted by reading those same nine reports.
 
-It is opt-in (`STRUCTURE_GUIDE = None` scores the bare controller prompt) and
-it is additive: `pipeline.build_report`'s test suite asserts the controller's
-own prompt text always appears first and unmodified, whether or not a guide
-is attached.
+**That makes it leakage, not a fair hint.** A run scored with the guide on
+measures how well a model can repeat a pattern pulled from the answer key it
+is then graded against — not how well it performs on a real, unseen
+recording. It does not generalise, and must never be reported as if it were
+the model's unaided capability.
 
-Keeping it out of `controller/prompts.py` is deliberate: that file is
+The notebook defaults `STRUCTURE_GUIDE = None`. Every result row stamps a
+`structure_guided` column (`True`/`False`) precisely so a master CSV can
+never silently blend the two conditions into one ranking — turning the guide
+on to see a best-case ceiling is legitimate, reporting it unlabelled as
+"accuracy" is not.
+
+`pipeline.build_report`'s test suite still asserts the controller's own
+prompt text always appears first and unmodified whether or not a guide is
+attached — the leakage is in *what the guide contains*, not in how it is
+spliced into the prompt.
+
+Keeping it out of `controller/prompts.py` is also deliberate: that file is
 production's prompt, used for every customer's reports, most of which do not
 share this one's template. Baking a Kaggle dataset's house style into it
 would fix this benchmark and quietly bias production.

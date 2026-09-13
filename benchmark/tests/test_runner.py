@@ -155,6 +155,24 @@ class TestRunOne:
                        structure_guide=rs.GUIDE, results_dir=tmp_path)
         assert all("Benchmark note" in call for call in model.calls)
 
+    def test_structure_guided_is_stamped_so_the_oracle_condition_cant_hide(self, items, factory, tmp_path):
+        """report_structure.GUIDE is extracted from the same reference
+        reports a run is scored against -- a run using it measures an oracle
+        condition, not unaided capability. structure_guided must be visible
+        on every row so a master CSV can never silently mix the two."""
+        import report_structure as rs
+
+        guided = runner.run_one(
+            "whisper", "fake-llm", "separate", items, devices=["cpu"],
+            model_factory=factory, llm_factory=lambda key, **kw: FakeLLM("x"),
+            structure_guide=rs.GUIDE, results_dir=tmp_path, label="guided")
+        unguided = runner.run_one(
+            "whisper", "fake-llm", "separate", items, devices=["cpu"],
+            model_factory=factory, llm_factory=lambda key, **kw: FakeLLM("x"),
+            structure_guide=None, results_dir=tmp_path, label="unguided")
+        assert set(guided["structure_guided"]) == {True}
+        assert set(unguided["structure_guided"]) == {False}
+
     def test_stt_and_llm_columns_are_stamped_on_every_row(self, items, factory, tmp_path):
         frame = runner.run_one("whisper", "fake-llm", "multimodal", items, devices=["cpu"],
                                model_factory=factory,

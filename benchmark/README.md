@@ -1,8 +1,9 @@
 # Benchmark
 
-Runs Persian radiology dictations through **speech recognition → language
-model** and scores the finished report against the radiologist's signed one,
-using the same metrics `evaluation/` uses in production.
+Runs English-dominant radiology dictations (Persian words mixed in) through
+**speech recognition → language model** and scores the finished report
+against the radiologist's signed one, using the same metrics `evaluation/`
+uses in production.
 
 It answers one question: **which combination should we ship, and can the
 hardware run it?** So every configuration is scored for clinical correctness

@@ -28,7 +28,7 @@ MAX_STITCH_OVERLAP_WORDS = int(os.getenv("MAX_STITCH_OVERLAP_WORDS", "40"))
 
 # --- Runtime ---
 TARGET_SAMPLE_RATE = 16000
-DEFAULT_LANGUAGE = os.getenv("BENCHMARK_LANGUAGE", "fa")
+DEFAULT_LANGUAGE = os.getenv("BENCHMARK_LANGUAGE", "en")
 
 # Comma-separated torch devices, or "auto" for every visible GPU (falling back
 # to CPU). On Kaggle's dual T4 this resolves to cuda:0,cuda:1 and one replica of

@@ -42,8 +42,9 @@ def code(text):
 md(f"""
 # Spin BuAli — radiology pipeline benchmark
 
-Runs Persian radiology dictations through **speech recognition → language
-model** and scores the finished report against the radiologist's signed one.
+Runs English-dominant radiology dictations (Persian words mixed in) through
+**speech recognition → language model** and scores the finished report
+against the radiologist's signed one.
 
 **Every run is its own cell**, and each one writes its own CSV before the cell
 finishes. Stop the session whenever you like — nothing already run needs to be
@@ -295,7 +296,7 @@ somehow illegitimate.
 """)
 
 code("""
-LANGUAGE = "fa"
+LANGUAGE = "en"                # the dictation is English-dominant, Persian words mixed in
 DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other free
 
 # How the recording is windowed before it reaches the STT model. adaptive

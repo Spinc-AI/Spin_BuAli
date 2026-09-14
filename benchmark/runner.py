@@ -121,7 +121,7 @@ def _save_transcripts(cache_path: Path, transcripts_by_asset: dict) -> None:
 
 
 def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
-            language: str = "fa", label: str | None = None,
+            language: str = "en", label: str | None = None,
             precision: str = "fp16", cards: int = 1, devices=None,
             preprocessing: str | None = None, structure_guide: str | None = None,
             terms=None, results_dir=None, model_factory=None, llm_factory=None,

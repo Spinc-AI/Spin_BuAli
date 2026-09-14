@@ -235,12 +235,30 @@ class MedGemmaTextModel(BaseLLM):
         inputs = self._processor.apply_chat_template(
             converted, tokenize=True, add_generation_prompt=True,
             return_dict=True, return_tensors="pt",
-        ).to(self._model.device, dtype=self._model.dtype)
+        # Device only, deliberately no dtype cast: unlike GemmaAudioModel
+        # (which has real floating-point audio tensors to cast), this class
+        # never sends an image, so the only tensors here are input_ids /
+        # attention_mask -- integer tensors that a blind dtype=float16/bf16
+        # cast has no legitimate reason to touch.
+        ).to(self._model.device)
         input_len = inputs["input_ids"].shape[-1]
+        eos_id = self._processor.tokenizer.eos_token_id
+        pad_id = self._processor.tokenizer.pad_token_id or eos_id
         with torch.no_grad():
-            outputs = self._model.generate(**inputs, max_new_tokens=config.MAX_NEW_TOKENS,
-                                           **_generation_kwargs(temperature))
-        return self._processor.decode(outputs[0][input_len:], skip_special_tokens=True)
+            outputs = self._model.generate(
+                **inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                eos_token_id=eos_id, pad_token_id=pad_id,
+                **_generation_kwargs(temperature))
+        new_tokens = outputs[0][input_len:]
+        text = self._processor.decode(new_tokens, skip_special_tokens=True)
+        if not text.strip() and new_tokens.numel() > 0:
+            # skip_special_tokens=True stripped everything -- the model
+            # generated something, just not ordinary text. Falling back to
+            # the raw decode turns a silent empty reply into a diagnosable
+            # one (pipeline.py's error snippet then shows what was actually
+            # produced instead of '').
+            text = self._processor.decode(new_tokens, skip_special_tokens=False)
+        return text
 
 
 class Phi4MultimodalModel(BaseLLM):

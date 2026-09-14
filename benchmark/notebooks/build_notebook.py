@@ -102,8 +102,11 @@ print(f"\\nrunning commit {{commit}}")
 
 code("""
 # Everything the benchmark needs beyond what Kaggle ships. bitsandbytes and
-# accelerate are for the quantized (tier B) language models.
-!pip install -q python-dotenv sentencepiece bitsandbytes accelerate
+# accelerate are for the quantized (tier B) language models. backoff and peft
+# are required by phi-4-multimodal's own custom modeling code
+# (trust_remote_code=True) -- not a torch/transformers dependency, specific
+# to that one checkpoint's repo, so nothing else here needs them.
+!pip install -q python-dotenv sentencepiece bitsandbytes accelerate backoff peft
 """)
 
 # ── 3. Imports ───────────────────────────────────────────────────────────

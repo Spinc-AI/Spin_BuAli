@@ -34,6 +34,7 @@ from abc import ABC, abstractmethod
 
 import torch
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
     AutoModelForMultimodalLM,
@@ -321,15 +322,23 @@ class Phi4MultimodalModel(BaseLLM):
     def load(self):
         _patch_sliding_window_cache()
         self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+        # The checkpoint's own config defaults to flash_attention_2, which
+        # needs the flash_attn package -- slow to build on Kaggle (CUDA/torch
+        # version matching, long compile) and not installed. Passing
+        # attn_implementation= directly to from_pretrained() did not
+        # override it (confirmed live: identical error either way) -- this
+        # custom model's config class evidently does not honour that kwarg
+        # the standard way. Forcing it on a pre-loaded AutoConfig instead,
+        # before the model ever sees it, is the more direct path. "eager"
+        # rather than "sdpa": this custom architecture's own attention class
+        # may not have a working SDPA path registered, since trust_remote_code
+        # repos don't always implement every backend transformers supports --
+        # eager needs no optimized kernel at all, so it works regardless.
+        model_config = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
+        model_config._attn_implementation = "eager"
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, device_map=config.DEVICE_MAP, dtype="auto",
+            self.model_id, config=model_config, device_map=config.DEVICE_MAP, dtype="auto",
             trust_remote_code=True,
-            # The checkpoint's own config defaults to flash_attention_2,
-            # which needs the flash_attn package -- slow to build on Kaggle
-            # (CUDA/torch version matching, long compile) and not installed.
-            # sdpa ships with transformers/torch directly; GemmaAudioModel
-            # already uses it successfully in this same file.
-            attn_implementation="sdpa",
         )
         self._generation_config = GenerationConfig.from_pretrained(self.model_id)
 

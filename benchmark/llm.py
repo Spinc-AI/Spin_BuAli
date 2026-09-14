@@ -239,19 +239,32 @@ def build(model_key: str, precision: str = "fp16", cards: int = 1,
           model_id: str | None = None, **kwargs):
     """The right kind of model for `model_key`, not yet loaded.
 
-    An audio-capable key (`plan.AUDIO_CAPABLE`) routes to `CoreLLMAdapter`,
-    which reuses `core_llm/model.py`'s own class for that model -- the only
-    place that knows how to attach audio for that specific architecture.
-    Everything else goes through `LocalLLM`, which additionally supports the
-    quantized tiers `core_llm/` does not.
+    Routes on `plan.TEXT_ONLY_STANDARD`, not on audio capability -- a key
+    outside that set routes to `CoreLLMAdapter`, which reuses
+    `core_llm/model.py`'s own class for that model. That covers every
+    audio-capable key, but also non-audio keys like medgemma-1.5-4b that
+    still need a non-standard load (AutoModelForImageTextToText, not
+    LocalLLM's AutoModelForCausalLM). Checking `plan.AUDIO_CAPABLE` here
+    instead was a real bug: medgemma-1.5-4b fell through to `LocalLLM`,
+    "loaded" without error, and silently produced nothing but empty replies.
+
+    `plan.TEXT_ONLY_STANDARD` keys go through `LocalLLM` instead, which
+    additionally supports the quantized tiers `core_llm/` does not.
+
+    `_hugging_face_id` is resolved unconditionally, before either branch --
+    it is the only torch-free way to confirm the key is real. Without it, an
+    unknown key routed to `CoreLLMAdapter` would surface as whatever
+    `bridge.build_llm_model` happens to raise (or a bare `import torch`
+    failure, if torch is not even installed) instead of the clear
+    `LoadFailed('... MODEL_REGISTRY')` a typo deserves.
     """
     if precision == "cloud" or ":" in model_key:
         return CloudLLM(model_key, **kwargs)
-    if model_key in plan.AUDIO_CAPABLE:
+    checkpoint_id = model_id or _hugging_face_id(model_key)
+    if model_key not in plan.TEXT_ONLY_STANDARD:
         return CoreLLMAdapter(model_key, bridge.build_llm_model(model_key),
                               precision=precision, cards=cards, **kwargs)
-    return LocalLLM(model_key, model_id or _hugging_face_id(model_key),
-                    precision=precision, cards=cards, **kwargs)
+    return LocalLLM(model_key, checkpoint_id, precision=precision, cards=cards, **kwargs)
 
 
 def _hugging_face_id(model_key: str) -> str:

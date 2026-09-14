@@ -266,6 +266,38 @@ class TestModelSelection:
         with pytest.raises(llm_module.LoadFailed, match="MODEL_REGISTRY"):
             llm_module.build("no-such-model")
 
+    def test_a_non_audio_special_model_still_routes_through_core_llm(self, monkeypatch):
+        """The real bug behind medgemma-1.5-4b's silent empty replies: it is
+        not audio-capable, but it still needs core_llm/model.py's
+        MedGemmaTextModel (AutoModelForImageTextToText), not LocalLLM's
+        plain AutoModelForCausalLM. Routing on plan.AUDIO_CAPABLE alone let
+        it fall through to LocalLLM, which "loaded" without error and then
+        produced nothing but empty replies -- three times, unchanged, because
+        every fix aimed at MedGemmaTextModel was never actually reached.
+        Routing on plan.TEXT_ONLY_STANDARD instead closes that gap for any
+        future non-audio, non-plain-causal-LM key too, not just this one."""
+        import plan as plan_module
+
+        class Stub:
+            model_id = "google/medgemma-1.5-4b-it"
+
+        assert "medgemma-1.5-4b" not in plan_module.AUDIO_CAPABLE
+        assert "medgemma-1.5-4b" not in plan_module.TEXT_ONLY_STANDARD
+        stub = Stub()
+        monkeypatch.setattr(bridge, "build_llm_model", lambda key: stub)
+        model = llm_module.build("medgemma-1.5-4b", precision="fp16", cards=1)
+        assert isinstance(model, llm_module.CoreLLMAdapter)
+
+    def test_text_only_standard_keys_still_use_localllm(self):
+        """Unchanged behaviour: aya-expanse and gemma-4-31b are plain
+        TextOnlyModel in core_llm/model.py, functionally identical to
+        LocalLLM's own loader -- no reason to route them elsewhere, and
+        LocalLLM is what keeps quantized-tier support for them."""
+        import plan as plan_module
+
+        for key in plan_module.TEXT_ONLY_STANDARD:
+            assert llm_module.build(key, precision="fp16", cards=1).__class__ is llm_module.LocalLLM
+
     def test_the_precision_from_the_plan_is_carried_through(self):
         model = llm_module.build("aya-expanse-32b", precision="nf4", cards=2)
         assert model.precision == "nf4" and model.cards == 2

@@ -40,6 +40,22 @@ LLM_PARAMS = {
 # it has no audio input at all, despite being one of the lightest models here.
 AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b", "phi-4-multimodal"}
 
+# Keys whose core_llm/model.py class is the plain TextOnlyModel -- a vanilla
+# AutoModelForCausalLM + AutoTokenizer, functionally identical to what
+# llm.LocalLLM already does itself. These are the only keys LocalLLM should
+# load; LocalLLM's own quantized tiers (int8/nf4), which core_llm/ classes
+# do not support, make it worth keeping for exactly this subset.
+#
+# Every other registered key -- audio-capable or not -- needs one of
+# core_llm/model.py's non-standard classes (GemmaAudioModel, QwenOmniModel,
+# MedGemmaTextModel, Phi4MultimodalModel, ...), which only
+# llm.CoreLLMAdapter knows how to reach. Routing on AUDIO_CAPABLE alone was
+# the bug: medgemma-1.5-4b is not audio-capable but does need
+# AutoModelForImageTextToText, not LocalLLM's AutoModelForCausalLM -- it
+# fell through to LocalLLM silently, loaded "successfully", and produced
+# nothing but empty replies, because nothing about that mismatch raises.
+TEXT_ONLY_STANDARD = {"aya-expanse-8b", "aya-expanse-32b", "gemma-4-31b"}
+
 # Preprocessing variants, as (id, description). Chunking is what actually
 # differs; VAD is included because it moves the adaptive chunk boundaries even
 # though it never cuts audio itself.

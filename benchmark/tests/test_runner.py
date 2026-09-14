@@ -90,6 +90,29 @@ class TestTop3:
 
 
 class TestRunOne:
+    def test_an_interrupt_mid_llm_load_still_unloads_before_propagating(
+            self, items, factory, tmp_path):
+        """KeyboardInterrupt during model.load() (a Kaggle Stop click on
+        "Loading weights...") must free the model before propagating --
+        model.load() previously ran outside any try/finally, so an
+        interrupt there left the model resident on GPU with no cleanup
+        anywhere in the call stack."""
+        class InterruptOnLoad(FakeLLM):
+            unload_called = False
+
+            def load(self):
+                raise KeyboardInterrupt
+
+            def unload(self):
+                self.unload_called = True
+
+        stub = InterruptOnLoad()
+        with pytest.raises(KeyboardInterrupt):
+            runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                           model_factory=factory, llm_factory=lambda key, **kw: stub,
+                           results_dir=tmp_path)
+        assert stub.unload_called is True
+
     def test_a_run_writes_a_csv_and_returns_it(self, items, factory, tmp_path):
         frame = runner.run_one(
             "whisper", "fake-llm", "separate", items,

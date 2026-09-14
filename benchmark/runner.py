@@ -208,7 +208,17 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     llm_kwargs = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
     model = (llm_factory or llm_module.build)(llm_key, precision=precision, cards=cards, **llm_kwargs)
     load_started = time.perf_counter()
-    model.load()
+    try:
+        model.load()
+    except BaseException:
+        # BaseException, not Exception: a Kaggle interrupt during "Loading
+        # weights..." is KeyboardInterrupt, which Exception does not catch.
+        # Without this, interrupting mid-load leaves the (partially) loaded
+        # model resident on GPU with nothing left to unload it -- the next
+        # cell's load then OOMs against memory nothing in this process still
+        # references but CUDA was never told to free.
+        model.unload()
+        raise
     load_seconds = time.perf_counter() - load_started
 
     try:

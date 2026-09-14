@@ -120,6 +120,55 @@ class TestFailuresAreRecorded:
         run = transcribe.transcribe_batch("fake", missing, devices=["cpu"], model_factory=factory)
         assert run.transcripts[0].error is not None
 
+    def test_an_interrupt_mid_load_still_unloads_before_propagating(self, items):
+        """KeyboardInterrupt, not Exception -- an interrupt during "Loading
+        weights..." (a Kaggle Stop click) must not leave the model resident
+        on GPU with nothing left in this process to unload it, and must not
+        be swallowed as an ordinary load failure either."""
+        import threading
+
+        from transcribe import ModelRun, _work_shard
+
+        class InterruptOnLoad(FakeModel):
+            unload_called = False
+
+            def load(self):
+                raise KeyboardInterrupt
+
+            def unload(self):
+                self.unload_called = True
+                super().unload()
+
+        stub = InterruptOnLoad()
+        with pytest.raises(KeyboardInterrupt):
+            _work_shard(lambda key, device: stub, "fake", "cpu", items, "en",
+                       ModelRun(model="fake"), threading.Lock(), None, None, {})
+        assert stub.unload_called is True
+
+    def test_a_regular_load_failure_still_unloads_too(self, items):
+        """Not just the interrupt path -- a normal load exception previously
+        skipped unload() entirely (nothing called it before this fix)."""
+        import threading
+
+        from transcribe import ModelRun, _work_shard
+
+        class FailOnLoad(FakeModel):
+            unload_called = False
+
+            def load(self):
+                raise RuntimeError("no weights")
+
+            def unload(self):
+                self.unload_called = True
+                super().unload()
+
+        stub = FailOnLoad()
+        run = ModelRun(model="fake")
+        _work_shard(lambda key, device: stub, "fake", "cpu", items, "en",
+                   run, threading.Lock(), None, None, {})
+        assert stub.unload_called is True
+        assert all("load failed" in t.error for t in run.transcripts)
+
 
 class TestDevices:
     def test_an_explicit_spec_is_honoured(self):

@@ -216,7 +216,16 @@ def _work_shard(factory, model_key, device, shard, language, run, lock,
     try:
         loading = time.perf_counter()
         model = factory(model_key, device)
-        model.load()
+        try:
+            model.load()
+        except BaseException:
+            # BaseException, not Exception: a Kaggle interrupt during
+            # "Loading weights..." is KeyboardInterrupt, which the `except
+            # Exception` below does not catch -- without this, interrupting
+            # mid-load leaves the (partially) loaded model resident on GPU
+            # with nothing left in this process to unload it.
+            model.unload()
+            raise
         load_seconds = time.perf_counter() - loading
     except Exception as error:  # noqa: BLE001 - a model that will not load is a result
         with lock:

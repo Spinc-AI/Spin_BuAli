@@ -216,8 +216,19 @@ class MedGemmaTextModel(BaseLLM):
     The checkpoint is image+text (loads via AutoModelForImageTextToText, not
     AutoModelForCausalLM -- attempting the latter fails at load time), but
     nothing here ever attaches an image, so the chat template only ever sees
-    a text content part -- except `system`, which the template expects as a
-    plain string (see `chat()`).
+    a text content part.
+
+    Every role, `system` included, gets `content` as a list of typed parts
+    (`[{"type": "text", "text": ...}]`), unlike GemmaAudioModel's plain
+    string for `system` -- an earlier version copied that convention on the
+    assumption the two share a template, and it does not: MedGemma's own
+    `chat_template.jinja` iterates `message['content']` expecting a list,
+    and a plain string there gets iterated character by character, each
+    character then failing `item['type']` with `TypeError: string indices
+    must be integers, not 'str'`. Confirmed against a live run -- the bug
+    this file had before that (empty replies) was unrelated, a routing bug
+    in llm.py that meant this class was never even reached; do not
+    reintroduce the plain-string branch based on that history repeating.
     """
 
     supports_audio = False
@@ -231,19 +242,8 @@ class MedGemmaTextModel(BaseLLM):
     def chat(self, messages, audio_path=None, temperature=0.3):
         if audio_path:
             raise ValueError(f"{self.model_id} is text-only and can't accept audio input")
-        # A system message gets plain string content, not a list of typed
-        # parts -- matching GemmaAudioModel's own convention for the same
-        # Gemma-family chat template. Wrapping *every* role uniformly (the
-        # previous version) is the more likely cause of the empty replies:
-        # a malformed system turn corrupts the whole prompt, and the model
-        # degenerates through the full token budget instead of erroring.
-        converted = []
-        for m in messages:
-            if m["role"] == "system":
-                converted.append({"role": "system", "content": m["content"]})
-            else:
-                converted.append({"role": m["role"],
-                                  "content": [{"type": "text", "text": m["content"]}]})
+        converted = [{"role": m["role"], "content": [{"type": "text", "text": m["content"]}]}
+                    for m in messages]
         inputs = self._processor.apply_chat_template(
             converted, tokenize=True, add_generation_prompt=True,
             return_dict=True, return_tensors="pt",
@@ -275,25 +275,30 @@ class MedGemmaTextModel(BaseLLM):
 
 
 class Phi4MultimodalModel(BaseLLM):
-    """Phi-4-multimodal-instruct. Text and audio, via Microsoft's own custom
-    modeling code (trust_remote_code=True) rather than a standard
-    transformers architecture class -- unlike every other model in this
-    file, `AutoModelForCausalLM` here resolves to that custom code, not the
-    plain-causal-LM path TextOnlyModel uses.
+    """Phi-4-multimodal-instruct. Text and audio.
 
-    The prompt format is the vendor's own: an inline `<|audio_1|>` placeholder
-    in the text where the audio should be attended to, with the actual audio
-    array passed alongside via the `audios` kwarg -- not a chat-template
-    content list like GemmaAudioModel/QwenOmniModel use.
+    Deliberately does NOT force trust_remote_code=True. Microsoft's own
+    custom modeling code (what that flag pulls in) imports
+    `SlidingWindowCache` from `transformers.cache_utils`, which the library
+    removed from its public API in v4.48 -- a checkpoint-repo file pinned to
+    an older transformers than whatever is actually installed fails at
+    import time with no way to fix it from here. Newer transformers releases
+    (reportedly 4.51+, per the model's own HF discussion #75) added native
+    Phi-4-multimodal support directly in the library, which needs no
+    trust_remote_code at all and does not carry that stale import. Omitting
+    the flag lets `AutoModelForCausalLM` prefer that native path when the
+    installed transformers has it, and fail with a clear one-line "pass
+    trust_remote_code=True" error when it does not -- rather than silently
+    always taking the fragile vendor-code path and hitting whatever that
+    version happens to be broken against.
     """
 
     supports_audio = True
 
     def load(self):
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id, device_map=config.DEVICE_MAP, dtype="auto",
-            trust_remote_code=True,
         )
         self._generation_config = GenerationConfig.from_pretrained(self.model_id)
 

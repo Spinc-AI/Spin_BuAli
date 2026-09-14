@@ -274,31 +274,56 @@ class MedGemmaTextModel(BaseLLM):
         return text
 
 
-class Phi4MultimodalModel(BaseLLM):
-    """Phi-4-multimodal-instruct. Text and audio.
+def _patch_sliding_window_cache():
+    """Restore an importable `SlidingWindowCache` name in
+    `transformers.cache_utils`, if the installed transformers removed it.
 
-    Deliberately does NOT force trust_remote_code=True. Microsoft's own
-    custom modeling code (what that flag pulls in) imports
-    `SlidingWindowCache` from `transformers.cache_utils`, which the library
-    removed from its public API in v4.48 -- a checkpoint-repo file pinned to
-    an older transformers than whatever is actually installed fails at
-    import time with no way to fix it from here. Newer transformers releases
-    (reportedly 4.51+, per the model's own HF discussion #75) added native
-    Phi-4-multimodal support directly in the library, which needs no
-    trust_remote_code at all and does not carry that stale import. Omitting
-    the flag lets `AutoModelForCausalLM` prefer that native path when the
-    installed transformers has it, and fail with a clear one-line "pass
-    trust_remote_code=True" error when it does not -- rather than silently
-    always taking the fragile vendor-code path and hitting whatever that
-    version happens to be broken against.
+    Idempotent and scoped to just that one name -- runs every time
+    Phi4MultimodalModel.load() does, cheap, and harmless to call again if
+    the name already exists (real or already patched).
+    """
+    import transformers.cache_utils as cache_utils
+
+    if not hasattr(cache_utils, "SlidingWindowCache"):
+        cache_utils.SlidingWindowCache = cache_utils.DynamicCache
+
+
+class Phi4MultimodalModel(BaseLLM):
+    """Phi-4-multimodal-instruct. Text and audio, via Microsoft's own custom
+    modeling code (trust_remote_code=True).
+
+    Confirmed live: the installed transformers has no native Phi-4-multimodal
+    support (omitting trust_remote_code produced an interactive "run custom
+    code? [y/N]" prompt, which hangs forever in a non-interactive notebook
+    cell -- there is no native path to fall back to here). So the vendor code
+    path is mandatory, which means its stale import has to be worked around
+    directly rather than avoided: `modeling_phi4mm.py` does
+    `from transformers.cache_utils import Cache, DynamicCache,
+    SlidingWindowCache, StaticCache`, and `SlidingWindowCache` was removed
+    from that module's public API in transformers v4.48.
+
+    Patched in, not pinned: downgrading transformers globally to get
+    SlidingWindowCache back risks breaking every other model in this file,
+    several of which need a fairly recent transformers already (MedGemma's
+    "fast" image processor, Gemma 4's AutoModelForMultimodalLM). Instead,
+    `_patch_sliding_window_cache()` aliases `SlidingWindowCache` to
+    `DynamicCache` (unbounded, not size-limited the way a real sliding
+    window is) only if the name is missing, only in this process, before the
+    vendor file ever imports it -- enough for the import itself to succeed.
+    Correctness caveat: if Phi-4-multimodal's forward pass actually depends
+    on sliding-window *behaviour* (not just the class existing), this is a
+    functional approximation, not a faithful implementation -- worth
+    revisiting if generation quality looks off specifically for this model.
     """
 
     supports_audio = True
 
     def load(self):
-        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        _patch_sliding_window_cache()
+        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id, device_map=config.DEVICE_MAP, dtype="auto",
+            trust_remote_code=True,
         )
         self._generation_config = GenerationConfig.from_pretrained(self.model_id)
 

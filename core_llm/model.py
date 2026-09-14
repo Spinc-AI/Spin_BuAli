@@ -324,6 +324,12 @@ class Phi4MultimodalModel(BaseLLM):
         self._model = AutoModelForCausalLM.from_pretrained(
             self.model_id, device_map=config.DEVICE_MAP, dtype="auto",
             trust_remote_code=True,
+            # The checkpoint's own config defaults to flash_attention_2,
+            # which needs the flash_attn package -- slow to build on Kaggle
+            # (CUDA/torch version matching, long compile) and not installed.
+            # sdpa ships with transformers/torch directly; GemmaAudioModel
+            # already uses it successfully in this same file.
+            attn_implementation="sdpa",
         )
         self._generation_config = GenerationConfig.from_pretrained(self.model_id)
 

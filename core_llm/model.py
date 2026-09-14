@@ -216,7 +216,8 @@ class MedGemmaTextModel(BaseLLM):
     The checkpoint is image+text (loads via AutoModelForImageTextToText, not
     AutoModelForCausalLM -- attempting the latter fails at load time), but
     nothing here ever attaches an image, so the chat template only ever sees
-    a text content part.
+    a text content part -- except `system`, which the template expects as a
+    plain string (see `chat()`).
     """
 
     supports_audio = False
@@ -230,8 +231,19 @@ class MedGemmaTextModel(BaseLLM):
     def chat(self, messages, audio_path=None, temperature=0.3):
         if audio_path:
             raise ValueError(f"{self.model_id} is text-only and can't accept audio input")
-        converted = [{"role": m["role"], "content": [{"type": "text", "text": m["content"]}]}
-                    for m in messages]
+        # A system message gets plain string content, not a list of typed
+        # parts -- matching GemmaAudioModel's own convention for the same
+        # Gemma-family chat template. Wrapping *every* role uniformly (the
+        # previous version) is the more likely cause of the empty replies:
+        # a malformed system turn corrupts the whole prompt, and the model
+        # degenerates through the full token budget instead of erroring.
+        converted = []
+        for m in messages:
+            if m["role"] == "system":
+                converted.append({"role": "system", "content": m["content"]})
+            else:
+                converted.append({"role": m["role"],
+                                  "content": [{"type": "text", "text": m["content"]}]})
         inputs = self._processor.apply_chat_template(
             converted, tokenize=True, add_generation_prompt=True,
             return_dict=True, return_tensors="pt",
@@ -243,7 +255,8 @@ class MedGemmaTextModel(BaseLLM):
         ).to(self._model.device)
         input_len = inputs["input_ids"].shape[-1]
         eos_id = self._processor.tokenizer.eos_token_id
-        pad_id = self._processor.tokenizer.pad_token_id or eos_id
+        tok_pad_id = self._processor.tokenizer.pad_token_id
+        pad_id = tok_pad_id if tok_pad_id is not None else eos_id
         with torch.no_grad():
             outputs = self._model.generate(
                 **inputs, max_new_tokens=config.MAX_NEW_TOKENS,

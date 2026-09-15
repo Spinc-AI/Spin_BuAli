@@ -131,9 +131,11 @@ class SeamlessV2Model(BaseSTTModel):
 class SeamlessV1Model(BaseSTTModel):
     """SeamlessM4T v1 speech-to-text model (e.g. hf-seamless-m4t-medium).
 
-    v1's ``generate(..., generate_speech=False)`` returns token ids directly
-    (no ``.sequences`` wrapper like v2), so decoding differs slightly from
-    ``SeamlessV2Model``.
+    ``generate(..., generate_speech=False)`` returned token ids directly on
+    transformers v4 -- no ``.sequences`` wrapper, unlike v2. On v5 it returns
+    a ``GenerateEncoderDecoderOutput`` like everything else, so this reads
+    ``.sequences`` when it is there and falls back to the bare ids when it is
+    not, rather than assuming either shape.
     """
 
     def __init__(self, model_id, device, tgt_lang="pes"):
@@ -157,7 +159,9 @@ class SeamlessV1Model(BaseSTTModel):
         tgt_lang = SEAMLESS_LANGUAGE_CODES.get(language, language) if language else self.tgt_lang
         with torch.no_grad():
             out = self._model.generate(**inputs, tgt_lang=tgt_lang, generate_speech=False)
-        tokens = out[0] if isinstance(out, (list, tuple)) else out
+        tokens = getattr(out, "sequences", out)
+        if isinstance(tokens, (list, tuple)):
+            tokens = tokens[0]
         return self._processor.decode(tokens.squeeze().tolist(), skip_special_tokens=True)
 
 

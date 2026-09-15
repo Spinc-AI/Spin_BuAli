@@ -342,7 +342,11 @@ somehow illegitimate.
 
 code("""
 LANGUAGE = "en"                # the dictation is English-dominant, Persian words mixed in
-DEVICES = ["cuda:0"]           # STT stays on one card so the LLM has the other free
+# None = one STT replica on whichever card has the most room when the run
+# starts. A fixed ["cuda:0"] kept aiming at the card previous runs had left
+# occupied, and OOMed mid-transcription with the other card sitting free.
+# Set an explicit list to pin it.
+DEVICES = None
 
 # How the recording is windowed before it reaches the STT model. adaptive
 # listens to the audio and snaps cuts to quiet moments; the -vad variants

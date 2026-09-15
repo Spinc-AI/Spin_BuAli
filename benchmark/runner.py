@@ -289,6 +289,18 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     _release_leaked_vram()
     _reset_vram()
     _warn_if_cards_are_occupied()
+
+    if not devices:
+        # One replica, on whichever card has the most room *now*. A fixed
+        # "cuda:0" keeps sending the STT model at the card that previous runs
+        # left occupied, which is how a run OOMs mid-transcription with the
+        # other card completely free. Deliberately not `resolve_devices()`
+        # here: that returns every visible GPU, and transcribe_batch loads one
+        # replica per device, which is the opposite of what a memory problem
+        # needs.
+        best = llm_module.emptiest_cuda_device()
+        devices = [best] if best else None
+
     started = time.perf_counter()
 
     # --- STT stage -----------------------------------------------------

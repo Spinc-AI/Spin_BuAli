@@ -90,6 +90,42 @@ MULTIMODAL_LLM = [
 ]
 
 
+def _vram_free() -> list[tuple[int, float, float]]:
+    """(device index, free GB, total GB) for every visible GPU."""
+    torch = bridge.torch_or_none()
+    if torch is None or not torch.cuda.is_available():
+        return []
+    report = []
+    for index in range(torch.cuda.device_count()):
+        free, total = torch.cuda.mem_get_info(index)
+        report.append((index, free / 1024 ** 3, total / 1024 ** 3))
+    return report
+
+
+def _warn_if_cards_are_occupied(needed_gb: float | None = None) -> None:
+    """Say so plainly when a card is already full before a load starts.
+
+    A load that OOMs inside `from_pretrained` leaves its partial weights
+    referenced by the exception traceback -- and in a notebook, IPython keeps
+    the last traceback alive, so `unload()` has nothing to drop and
+    `empty_cache()` cannot reclaim them. The next run in that kernel then
+    fails on memory the previous failure is still holding, which reads like a
+    fresh OOM and is really a stale one. Only a kernel restart clears it, so
+    the useful thing is to name it before the run rather than after.
+    """
+    cards = _vram_free()
+    if not cards:
+        return
+    print("  VRAM: " + " | ".join(
+        f"cuda:{i} {free:.1f}/{total:.1f} GB free" for i, free, total in cards))
+    occupied = [i for i, free, total in cards if free < 0.5 * total]
+    if occupied:
+        print(f"  WARNING: cuda:{','.join(str(i) for i in occupied)} already "
+              "more than half used before this run started. If the previous "
+              "cell failed to load a model, its weights are still held by that "
+              "traceback -- restart the kernel, this run will not fit around them.")
+
+
 def _peak_vram_gb() -> float:
     torch = bridge.torch_or_none()
     if torch is None or not torch.cuda.is_available():
@@ -221,6 +257,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
 
     # --- LLM stage -------------------------------------------------------
     print(f"[llm] {llm_key} ({precision}, {cards} card(s))")
+    _warn_if_cards_are_occupied()
     llm_kwargs = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
     model = (llm_factory or llm_module.build)(llm_key, precision=precision, cards=cards, **llm_kwargs)
     load_started = time.perf_counter()

@@ -85,7 +85,15 @@ def extract_json(reply: str) -> dict:
     dragging in httpx and a provider configuration.
 
     Tolerant of code fences and of a model that explains itself before
-    answering, because they all do.
+    answering, because they all do -- and of a raw control character (a
+    literal tab or newline) left unescaped inside a string value, which
+    several models here do too. Strict JSON forbids that (RFC 8259 requires
+    `\t`/`\n`, not the byte itself), so `json.loads`'s default strictness
+    turned a model writing "...retroperitoneal<TAB><TAB>for the liver..."
+    into `JSONDecodeError: Invalid control character` instead of a report --
+    confirmed live, more than once, across more than one model. Python's own
+    escape hatch for exactly this is `strict=False`; there is no other
+    document-shape difference to be tolerant of here.
     """
     text = reply.strip()
     if "```" in text:
@@ -95,4 +103,4 @@ def extract_json(reply: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("no JSON object found in the LLM reply")
-    return json.loads(text[start:end + 1])
+    return json.loads(text[start:end + 1], strict=False)

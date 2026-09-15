@@ -172,6 +172,46 @@ class TestQuantizedLoadsForceFP16:
         assert 'logging.getLogger("bitsandbytes")' in source
 
 
+class TestVoxtralAndQwen2AudioLiveFixes:
+    """Two live-run failures, both 9/9 on the first real run of each model,
+    pinned as text against core_llm/model.py -- same reasoning as
+    TestQuantizedLoadsForceFP16 above: torch is not installed in this test
+    environment, so the class bodies can only be inspected as source.
+    """
+
+    @staticmethod
+    def _class_body(name):
+        import re
+
+        import settings
+
+        source = (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
+        match = re.search(rf"^class {name}\(BaseLLM\):\n(.*?)(?=^class |\Z)",
+                          source, re.MULTILINE | re.DOTALL)
+        assert match, f"{name} not found in core_llm/model.py"
+        return match.group(1)
+
+    def test_voxtral_never_sends_a_bare_system_role(self):
+        """mistral-common's own request validation refuses a SystemMessage
+        alongside an AudioChunk: `ValueError: Found system messages at
+        indexes [...] and audio chunks in messages at indexes [...]. This is
+        not allowed prior to the tokenizer version 13.` -- hit on 9/9 clips,
+        every one identical. The fix folds any system content into the next
+        user turn instead of emitting a separate system role at all."""
+        body = self._class_body("VoxtralModel")
+        assert '{"role": "system"' not in body
+        assert "pending_system" in body
+
+    def test_qwen2_audio_never_sends_an_empty_user_turn_with_audio(self):
+        """Every official Qwen2-Audio example pairs its audio with a real
+        question; a live run that sent audio alone (system-only
+        instructions, empty user turn -- this benchmark's usual multimodal
+        shape) returned raw SRT-style hallucinated captions on 9/9 clips,
+        never the requested JSON."""
+        body = self._class_body("Qwen2AudioModel")
+        assert "not text" in body
+
+
 class TestRouting:
     def test_audio_capable_and_nonstandard_keys_avoid_LocalLLM(self):
         """The routing bug that cost three identical debugging rounds:

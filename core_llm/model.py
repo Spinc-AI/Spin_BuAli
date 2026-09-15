@@ -468,9 +468,18 @@ class VoxtralModel(BaseLLM):
 
     Two conventions differ from the Gemma/Qwen classes above:
 
-    * `system` content stays a plain string. Voxtral tokenizes through
-      mistral-common rather than a Jinja template, and mistral-common's
-      `SystemMessage` takes text, not a list of typed parts.
+    * **No system role reaches the tokenizer when audio is present.**
+      mistral-common's request validation refuses a `SystemMessage` alongside
+      an `AudioChunk` outright: `ValueError: Found system messages at
+      indexes [...] and audio chunks in messages at indexes [...]. This is
+      not allowed prior to the tokenizer version 13.` -- confirmed live, 9/9
+      clips, on the tokenizer this checkpoint ships. Mistral's own reference
+      examples for Voxtral never use a system turn at all, audio or not, for
+      the same reason. So any leading system message here is folded into the
+      text of the *next* user turn instead of sent separately -- the
+      established fix for this exact error (see the Bedrock provider's own
+      Voxtral integration, which hit the same validation and fixed it by
+      dropping the system message rather than restructuring anything else).
     * `apply_chat_template` returns model-ready inputs directly -- no
       `tokenize=`/`return_dict=` arguments, and the audio named by `path` is
       loaded by the processor itself.
@@ -490,18 +499,26 @@ class VoxtralModel(BaseLLM):
 
     def chat(self, messages, audio_path=None, temperature=0.3):
         last_user = _last_user_index(messages) if audio_path else -1
+        # Folded into the first user turn that follows, not sent as its own
+        # role -- see the class docstring for why a system role has to be
+        # dropped whenever audio is going to be in the conversation at all.
+        pending_system = "\n\n".join(m["content"] for m in messages
+                                     if m["role"] == "system" and m["content"])
         converted = []
         for i, m in enumerate(messages):
             if m["role"] == "system":
-                converted.append({"role": "system", "content": m["content"]})
                 continue
             content = []
             if audio_path and i == last_user:
                 # Audio first, matching the model's own reference examples.
                 # str(), not the Path itself -- see GemmaAudioModel.
                 content.append({"type": "audio", "path": str(audio_path)})
-            if m["content"]:
-                content.append({"type": "text", "text": m["content"]})
+            text = m["content"]
+            if m["role"] == "user" and pending_system:
+                text = f"{pending_system}\n\n{text}" if text else pending_system
+                pending_system = ""  # only the next user turn gets it
+            if text:
+                content.append({"type": "text", "text": text})
             converted.append({"role": m["role"], "content": content})
 
         inputs = self._processor.apply_chat_template(converted).to(self._model.device)
@@ -525,6 +542,20 @@ class Qwen2AudioModel(BaseLLM):
     silently produces a four-times-too-long spectrogram rather than an error.
 
     `system` content is a plain string, as in that same documentation.
+
+    One more thing worth flagging rather than papering over: every official
+    usage example pairs its audio with a real user-turn question --
+    "What's that sound?", "What does the person say?" -- never audio alone
+    with the whole instruction left to the system role. This benchmark's
+    multimodal calls do exactly that (see `pipeline.audio_prompt`: no
+    cross-check transcripts means `user_text=None`), and a live run this way
+    returned raw SRT-style hallucinated captions on 9/9 clips, never once as
+    the requested JSON -- consistent with the model falling back to its most
+    common pretraining shape when the user turn gives it nothing to respond
+    to. The one-line nudge below, added only when the turn would otherwise
+    be empty, is the fix to verify against a live run, not a proven one --
+    it is a plausible cause backed by the model's own documented usage
+    pattern, not a confirmed root cause.
     """
 
     supports_audio = True
@@ -547,8 +578,13 @@ class Qwen2AudioModel(BaseLLM):
             content = []
             if audio_path and i == last_user:
                 content.append({"type": "audio", "audio_url": str(audio_path)})
-            if m["content"]:
-                content.append({"type": "text", "text": m["content"]})
+            text = m["content"]
+            if audio_path and i == last_user and not text:
+                # See the class docstring -- an empty turn here is the one
+                # thing every official example avoids.
+                text = "Listen to this recording and follow the instructions above."
+            if text:
+                content.append({"type": "text", "text": text})
             converted.append({"role": m["role"], "content": content})
 
         text = self._processor.apply_chat_template(

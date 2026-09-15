@@ -131,6 +131,47 @@ class TestAnUnapplicablePlacementFailsLoudly:
         assert stub.loaded
 
 
+class TestQuantizedLoadsForceFP16:
+    """core_llm/model.py itself, not the adapter -- pinned as text, the same
+    way test_runner.py checks core_llm without importing torch (not
+    installed in this test environment; see that file's own comment).
+
+    The bug: a quantized `_load_kwargs()` used to `kwargs.pop("dtype", None)`
+    -- meaning a quantized GemmaAudioModel load specified no dtype at all,
+    so its non-quantized layers (norms, embeddings) kept the checkpoint's own
+    bf16. bitsandbytes' 8-bit matmul has one fixed compute dtype (fp16) and
+    casts every bf16 activation that reaches it -- once per matmul, logged
+    every time, through bitsandbytes' own logger rather than `warnings.warn`,
+    which is why the notebook's blanket `warnings.filterwarnings("ignore")`
+    never touched it. Confirmed live: gemma-4-12b at int8 produced enough
+    duplicate lines across a nine-clip generation to hang the Kaggle notebook
+    frontend solid, recoverable only with a hard reload.
+    """
+
+    @staticmethod
+    def _source():
+        import pathlib
+
+        import settings
+
+        return (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
+
+    def test_a_quantized_load_kwargs_call_sets_fp16_not_pops_dtype(self):
+        source = self._source()
+        start = source.index("def _load_kwargs(")
+        end = source.index("\n\n\n", start)
+        body = source[start:end]
+        assert 'kwargs.pop("dtype"' not in body, (
+            "popping dtype under quantization leaves the checkpoint's own "
+            "dtype (bf16 for every Gemma 4 variant) on the unquantized "
+            "layers -- see this test's class docstring")
+        assert 'kwargs["dtype"] = torch.float16' in body
+
+    def test_bitsandbytes_logging_is_capped_as_defense_in_depth(self):
+        source = self._source()
+        assert 'logging.getLogger("bitsandbytes")' in source
+
+
 class TestRouting:
     def test_audio_capable_and_nonstandard_keys_avoid_LocalLLM(self):
         """The routing bug that cost three identical debugging rounds:
@@ -160,3 +201,16 @@ class TestRouting:
 
         for key in runner.MULTIMODAL_LLM + runner.TOP3_LLM:
             assert key in plan.LLM_PARAMS
+
+    def test_qwen3_omni_stays_out_of_the_default_roster(self):
+        """Live-confirmed: nf4 across two cards routes through
+        device_map="auto", which dispatched part of the Thinker's
+        non-quantized weight to CPU, and bitsandbytes' 4-bit quantizer
+        refuses that outright (`ValueError: Some modules are dispatched on
+        the CPU or the disk...`). Still registered in core_llm/model.py and
+        still in plan.AUDIO_CAPABLE for whoever solves the device_map -- just
+        not run by default until someone does. See runner.py's comment above
+        MULTIMODAL_LLM for the full trace."""
+        import runner
+
+        assert "qwen3-omni-30b" not in runner.MULTIMODAL_LLM

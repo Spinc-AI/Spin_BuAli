@@ -37,6 +37,7 @@ all, so keeping it would mean two serving paths side by side when most of
 these models do both roles.
 """
 import gc
+import logging
 import tempfile
 import threading
 from abc import ABC, abstractmethod
@@ -70,6 +71,20 @@ def _quantization_config():
     """
     if not config.QUANTIZATION:
         return None
+    # bitsandbytes logs "MatMul8bitLt: inputs will be cast from <dtype> to
+    # float16 during quantization" through its OWN logger (logging, not
+    # warnings.warn in the version pinned by this notebook's install cell) --
+    # every from_pretrained() call here already runs behind
+    # `warnings.filterwarnings("ignore")`, and that had no effect on this
+    # message at all, which is the tell. It fires once per 8-bit matmul call,
+    # every forward pass through every quantized layer, and on a live Kaggle
+    # session generating 1536 tokens across nine clips that is enough
+    # duplicate output lines to hang the notebook frontend solid -- confirmed
+    # live, recoverable only with a hard reload, not a Python-side hang.
+    # `dtype=torch.float16` below is the actual fix (there is nothing left to
+    # cast); this is defense in depth for whatever still reaches the mismatch
+    # (audio features arriving in the processor's own dtype, say).
+    logging.getLogger("bitsandbytes").setLevel(logging.ERROR)
     if config.QUANTIZATION == "int8":
         return BitsAndBytesConfig(load_in_8bit=True)
     if config.QUANTIZATION == "nf4":
@@ -90,9 +105,17 @@ def _load_kwargs(**extra) -> dict:
     quantization = _quantization_config()
     if quantization is not None:
         kwargs["quantization_config"] = quantization
-        # bitsandbytes picks its own storage dtype for the quantized weights;
-        # a dtype= alongside it is either ignored or an outright conflict.
-        kwargs.pop("dtype", None)
+        # T4 has no bf16 units, and a checkpoint's native dtype (bf16, for
+        # every Gemma 4 variant) left on the *unquantized* layers -- norms,
+        # embeddings -- is exactly the mismatch _quantization_config's
+        # comment describes: bitsandbytes' int8 matmul has one fixed compute
+        # dtype (fp16) and casts every bf16 activation that reaches it, on
+        # every call, logging every time it does. Loading the whole model in
+        # fp16 up front leaves nothing to cast. This overrides whatever the
+        # caller asked for (e.g. TextOnlyModel's dtype="auto") deliberately --
+        # a quantized load has no legitimate reason to want the checkpoint's
+        # own dtype for its unquantized remainder.
+        kwargs["dtype"] = torch.float16
     return kwargs
 
 

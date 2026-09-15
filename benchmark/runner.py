@@ -90,12 +90,31 @@ TOP3_LLM = [
 #
 # phi-4-multimodal would sit second in this list by weight and is excluded
 # for the reason documented above TOP3_LLM.
+#
+# qwen3-omni-30b is ALSO excluded, for a live-confirmed reason of its own:
+# nf4 across two cards routes through accelerate's device_map="auto", which
+# bin-packs module-by-module rather than reasoning about total free memory --
+# and Qwen3-Omni's Thinker carries real weight outside the quantized language
+# model (an audio encoder, embeddings) that "auto" tried to place on
+# whichever card had room left, came up short on both, and dispatched the
+# remainder to CPU. bitsandbytes' 4-bit quantizer refuses that outright:
+#
+#   ValueError: Some modules are dispatched on the CPU or the disk. Make
+#   sure you have enough GPU RAM to fit the quantized model...
+#
+# That raised cleanly. What actually cost a live Kaggle session a hard reload
+# was upstream of it -- see core_llm/model.py's _quantization_config for the
+# bitsandbytes logging-spam bug this shares with gemma-4-12b, now fixed
+# there. The device_map failure above is unrelated and still open: it needs
+# either a hand-built device_map (not "auto") or more GPU than 2x16 GB, and
+# guessing at one from here without a live card to test against is how
+# phi-4-multimodal cost five rounds of failed fixes. Left registered in
+# core_llm/model.py for whoever picks it up with hardware to iterate on.
 MULTIMODAL_LLM = [
     "voxtral-mini-3b",   # 4.7B  -> ~10.8 GB   fp16, one card
     "gemma-4-e4b",       # 7.85B -> ~18.1 GB   fp16, two cards
     "qwen2-audio-7b",    # 8.4B  -> ~19.3 GB   fp16, two cards
     "gemma-4-12b",       # 12B   -> ~13.8 GB   int8, two cards
-    "qwen3-omni-30b",    # 30.5B -> ~17.5 GB   nf4,  two cards
 ]
 
 

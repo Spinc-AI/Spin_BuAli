@@ -98,6 +98,41 @@ class TestTop3:
                 f"{key} is registered as {match.group(1)}, which cannot take audio input")
 
 
+class TestMemoryIsClearedBeforeARun:
+    def test_it_drops_the_traceback_a_failed_load_left_behind(self):
+        """What end-of-run unload() cannot do. A load that dies inside
+        from_pretrained never assigns the model anywhere unload() can reach,
+        but its partial weights stay pinned by the exception's frames --
+        sys.last_traceback, plus IPython's Out/_ history in a notebook. Until
+        those references go, empty_cache() reclaims nothing, and the next run
+        fails on memory the last failure is still holding."""
+        import sys
+
+        try:
+            raise RuntimeError("stands in for a load that OOMed")
+        except RuntimeError:
+            sys.last_type, sys.last_value, sys.last_traceback = sys.exc_info()
+
+        assert getattr(sys, "last_traceback", None) is not None
+        runner._release_leaked_vram()
+        assert getattr(sys, "last_traceback", None) is None
+        assert getattr(sys, "last_value", None) is None
+
+    def test_it_is_safe_when_nothing_was_left_behind(self):
+        """Runs on a clean kernel too -- no traceback, no IPython, no CUDA."""
+        runner._release_leaked_vram()   # must not raise
+
+    def test_a_run_clears_memory_before_it_allocates(self, items, factory, tmp_path, monkeypatch):
+        """Start-of-run, not just end-of-run: re-running a cell after a
+        failure is the normal case here."""
+        calls = []
+        monkeypatch.setattr(runner, "_release_leaked_vram", lambda: calls.append("cleared"))
+        runner.run_one("whisper", "fake-llm", "separate", items, devices=["cpu"],
+                       model_factory=factory, llm_factory=lambda key, **kw: FakeLLM("x"),
+                       results_dir=tmp_path)
+        assert calls == ["cleared"]
+
+
 class TestRunOne:
     def test_an_interrupt_mid_llm_load_still_unloads_before_propagating(
             self, items, factory, tmp_path):

@@ -410,6 +410,16 @@ cached transcript prints `-- cached, skipping transcription` and its CSV's
 `stt_cached` column is `True`. The cache lives in `RESULTS_DIR/transcripts/`;
 delete a file there to force that one pair to be redone, or pass
 `use_cache=False` to force a cell to redo it regardless.
+
+**Memory is cleared at the start of every run, not just the end.** Each cell
+prints free VRAM per card before it allocates. A run that dies mid-load
+leaves its partial weights pinned by the traceback -- which `unload()` can
+never reach, because the model was never assigned anywhere -- so the cleanup
+drops those references (`sys.last_traceback`, and the notebook's `Out`/`_`
+history) before collecting. To do the same by hand after a failure, without
+starting another run: `runner.free_vram()`. If a card still shows as more
+than half used after that, something outside this process holds it and only
+a kernel restart will clear it -- the cell says so when it happens.
 """)
 
 _stt_comment = {

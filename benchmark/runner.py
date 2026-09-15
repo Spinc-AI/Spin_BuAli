@@ -102,7 +102,7 @@ def _vram_free() -> list[tuple[int, float, float]]:
     return report
 
 
-def _warn_if_cards_are_occupied(needed_gb: float | None = None) -> None:
+def _warn_if_cards_are_occupied(when: str = "before this run started") -> None:
     """Say so plainly when a card is already full before a load starts.
 
     A load that OOMs inside `from_pretrained` leaves its partial weights
@@ -121,9 +121,29 @@ def _warn_if_cards_are_occupied(needed_gb: float | None = None) -> None:
     occupied = [i for i, free, total in cards if free < 0.5 * total]
     if occupied:
         print(f"  WARNING: cuda:{','.join(str(i) for i in occupied)} already "
-              "more than half used before this run started. If the previous "
-              "cell failed to load a model, its weights are still held by that "
-              "traceback -- restart the kernel, this run will not fit around them.")
+              f"more than half used {when}, and the start-of-run cleanup could "
+              "not reclaim it. Something outside this process (or a reference "
+              "this cannot reach) is holding it -- restart the kernel, because "
+              "this run will not fit around it.")
+
+
+def free_vram() -> None:
+    """Clear GPU memory now, and say what that recovered.
+
+    `run_one` already does this at the start of every run. This is the same
+    thing as a one-liner, for when a cell has just failed and you want the
+    cards back without starting another run -- `runner.free_vram()`.
+    """
+    before = _vram_free()
+    _release_leaked_vram()
+    after = _vram_free()
+    if not before:
+        print("no CUDA devices visible")
+        return
+    for (index, was_free, total), (_, now_free, _total) in zip(before, after):
+        recovered = now_free - was_free
+        print(f"cuda:{index}  {now_free:.1f}/{total:.1f} GB free"
+              + (f"  (recovered {recovered:.1f} GB)" if recovered > 0.05 else ""))
 
 
 def _peak_vram_gb() -> float:
@@ -139,6 +159,49 @@ def _reset_vram():
     if torch is not None and torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             torch.cuda.reset_peak_memory_stats(f"cuda:{i}")
+
+
+def _release_leaked_vram() -> None:
+    """Reclaim what a previous *failed* run is still holding, before this one
+    allocates anything.
+
+    Unloading at the end of a run only covers runs that reach their end. A
+    load that dies inside `from_pretrained` never assigns the model anywhere
+    this code can reach, so there is nothing for `unload()` to drop -- but
+    the partially built weights stay reachable through the exception that
+    carried them out. `sys.last_traceback` holds those frames, and in a
+    notebook IPython additionally keeps the last result and the `Out`/`_`
+    history, so the references outlive the cell indefinitely and
+    `empty_cache()` reclaims nothing.
+
+    Dropping those references first is what makes the collection actually
+    free the memory. The cost is the notebook's `Out`/`_` history for the
+    cells before this one, which is worth a card.
+    """
+    import gc
+    import sys
+
+    for name in ("last_traceback", "last_value", "last_type", "last_exc"):
+        try:
+            delattr(sys, name)
+        except AttributeError:
+            pass
+
+    get_ipython = getattr(sys.modules.get("IPython"), "get_ipython", None)
+    shell = get_ipython() if get_ipython else None
+    if shell is not None:
+        # Clears Out[...] and the _ / __ / ___ back-references, which are the
+        # other thing holding a dead run's tensors alive in a notebook.
+        try:
+            shell.displayhook.flush()
+        except Exception:  # noqa: BLE001 - best effort; never fail a run over it
+            pass
+
+    gc.collect()
+    torch = bridge.torch_or_none()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 def _transcript_cache_path(results_dir: Path, prep_label: str, stt_key: str) -> Path:
@@ -218,7 +281,14 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
     terms = terms or bridge.ClinicalTerms()
 
     print(f"\n{'=' * 70}\n  RUN  {label}\n{'=' * 70}")
+    # Before anything allocates: reclaim whatever an earlier run left behind,
+    # including a run that died mid-load and whose weights are still pinned by
+    # its traceback. Re-running a cell after a failure is the normal case here,
+    # not the exception, so this belongs at the start of every run rather than
+    # only at the end of the ones that finish.
+    _release_leaked_vram()
     _reset_vram()
+    _warn_if_cards_are_occupied()
     started = time.perf_counter()
 
     # --- STT stage -----------------------------------------------------
@@ -257,7 +327,7 @@ def run_one(stt_key: str | None, llm_key: str, pipeline_name: str, items, *,
 
     # --- LLM stage -------------------------------------------------------
     print(f"[llm] {llm_key} ({precision}, {cards} card(s))")
-    _warn_if_cards_are_occupied()
+    _warn_if_cards_are_occupied("with the STT stage already unloaded")
     llm_kwargs = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
     model = (llm_factory or llm_module.build)(llm_key, precision=precision, cards=cards, **llm_kwargs)
     load_started = time.perf_counter()

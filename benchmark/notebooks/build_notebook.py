@@ -114,7 +114,15 @@ code("""
 # established architectures while adding new ones -- the risk profile here
 # is the opposite of downgrading, which is why phi-4-multimodal's fix
 # earlier avoided touching this version at all and this one does not.
-!pip install -q --upgrade transformers python-dotenv sentencepiece bitsandbytes accelerate
+#
+# "numpy<2": confirmed live -- without this pin, the transformers upgrade
+# above drags numpy up to 2.x, which breaks Kaggle's preinstalled torch
+# wheel (built against numpy 1.x's ABI) with
+# "ImportError: cannot import name 'nn' from partially initialized module
+# 'torch' (most likely due to a circular import)" -- torch's own import
+# sequence is not actually circular, it just cannot complete against a
+# mismatched numpy. Pinning here keeps pip's resolver from touching it.
+!pip install -q --upgrade transformers "numpy<2" python-dotenv sentencepiece bitsandbytes accelerate
 """)
 
 # ── 3. Imports ───────────────────────────────────────────────────────────

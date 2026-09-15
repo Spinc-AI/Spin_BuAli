@@ -336,10 +336,23 @@ class Phi4MultimodalModel(BaseLLM):
         # eager needs no optimized kernel at all, so it works regardless.
         model_config = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
         model_config._attn_implementation = "eager"
+        # No device_map here, deliberately: transformers' default
+        # from_pretrained() path constructs the model on the meta device
+        # first (real allocation deferred until weights load, the standard
+        # fast-init transformers/accelerate use for every model now) --
+        # fine for ordinary modules, but this checkpoint's own
+        # speech_conformer_encoder.py computes a real value inside __init__
+        # and calls .item() on it, which meta tensors cannot do
+        # ("Tensor.item() cannot be called on meta tensors", confirmed
+        # live). low_cpu_mem_usage=False disables that fast-init path, but
+        # recent transformers raises if device_map and
+        # low_cpu_mem_usage=False are passed together -- so device_map is
+        # dropped here and the whole model is moved to the target device
+        # afterward instead, once real (non-meta) weights exist to move.
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, config=model_config, device_map=config.DEVICE_MAP, dtype="auto",
-            trust_remote_code=True,
-        )
+            self.model_id, config=model_config, dtype="auto",
+            trust_remote_code=True, low_cpu_mem_usage=False,
+        ).to(config.DEVICE_MAP)
         self._generation_config = GenerationConfig.from_pretrained(self.model_id)
 
     def chat(self, messages, audio_path=None, temperature=0.3):

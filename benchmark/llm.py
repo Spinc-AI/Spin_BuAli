@@ -236,6 +236,12 @@ class CoreLLMAdapter:
     def generate(self, system_prompt: str, user_text: str, audio_path: str | None = None) -> str:
         if audio_path and not self._core_model.supports_audio:
             raise ValueError(f"{self.model_key} is text-only and can't accept audio input")
+        # dataset.Item.audio is a pathlib.Path, and the processors accept a
+        # numpy array or a string (URL, local path, base64) -- a Path gets
+        # "Incorrect format used for `audio`". Normalised here as well as in
+        # each core_llm class, so a model added later cannot reintroduce it.
+        if audio_path is not None:
+            audio_path = str(audio_path)
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text or ""}]
         # temperature <= 0.01 means greedy decoding, matching LocalLLM's

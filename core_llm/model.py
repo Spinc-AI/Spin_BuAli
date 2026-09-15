@@ -146,7 +146,11 @@ class GemmaAudioModel(BaseLLM):
                 continue
             content = [{"type": "text", "text": m["content"]}]
             if audio_path and i == last_user:
-                content.append({"type": "audio", "url": audio_path})
+                # str(), not the Path itself: the processor accepts a numpy
+                # array or a string (URL, local path, base64) and rejects a
+                # pathlib.Path with "Incorrect format used for `audio`".
+                # dataset.Item.audio is a Path, so this is the normal case.
+                content.append({"type": "audio", "url": str(audio_path)})
             converted.append({"role": m["role"], "content": content})
 
         inputs = self._processor.apply_chat_template(
@@ -186,7 +190,9 @@ class QwenOmniModel(BaseLLM):
             content = [{"type": "text", "text": m["content"]}]
             if audio_path and i == last_user:
                 # audio part first, matching the model's own reference examples
-                content = [{"type": "audio", "path": audio_path}] + content
+                # str() for the same reason as GemmaAudioModel above -- a
+                # pathlib.Path is not one of the accepted audio formats.
+                content = [{"type": "audio", "path": str(audio_path)}] + content
             converted.append({"role": m["role"], "content": content})
 
         # load_audio_from_video (from the reference docs example) deliberately

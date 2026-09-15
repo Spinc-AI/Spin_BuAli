@@ -288,6 +288,39 @@ class TestModelSelection:
         model = llm_module.build("medgemma-1.5-4b", precision="fp16", cards=1)
         assert isinstance(model, llm_module.CoreLLMAdapter)
 
+    def test_the_audio_path_reaches_the_model_as_a_string(self):
+        """dataset.Item.audio is a pathlib.Path, and the processors reject
+        one -- "Incorrect format used for `audio`. Should be a numpy array or
+        a `str`". That failed every recording of every multimodal run."""
+        class FakeCoreModel:
+            model_id = "fake/core"
+            supports_audio = True
+
+            def __init__(self):
+                self.seen = None
+
+            def chat(self, messages, audio_path=None, temperature=0.3):
+                self.seen = audio_path
+                return "{}"
+
+        core = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", core).generate(
+            "sys", "user", audio_path=pathlib.Path("A1.wav"))
+        assert isinstance(core.seen, str), f"got {type(core.seen).__name__}"
+
+    def test_core_llm_classes_stringify_the_audio_path(self):
+        """The same guarantee inside core_llm/model.py, where the payload is
+        actually built. Read as text -- it imports torch at module level."""
+        import re
+
+        import settings
+
+        source = (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
+        for match in re.finditer(r'"(?:url|path)":\s*([^,}\n]+)', source):
+            value = match.group(1).strip()
+            assert value.startswith("str("), (
+                f'audio payload passes {value} unconverted; a Path is rejected')
+
     def test_the_stt_models_use_the_singular_audio_kwarg(self):
         """`audios=` was deprecated and is a hard ValueError from transformers
         v5 on. SeamlessV1Model still used it, so seamless-medium failed every

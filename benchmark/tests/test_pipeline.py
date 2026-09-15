@@ -288,6 +288,35 @@ class TestModelSelection:
         model = llm_module.build("medgemma-1.5-4b", precision="fp16", cards=1)
         assert isinstance(model, llm_module.CoreLLMAdapter)
 
+    def test_core_llm_adapter_shards_across_cards(self):
+        """The bug this pins: CoreLLMAdapter stored `cards` and never used
+        it, while core_llm's classes hardcode device_map="cuda" (one GPU).
+        A (fp16, 2 cards) placement for gemma-4-e4b -- 7.85B, ~15.7 GB, which
+        cannot fit one 14.56 GB T4 -- still loaded onto a single card and
+        died with a CUDA OOM partway through the weights."""
+        class FakeCoreConfig:
+            DEVICE_MAP = "cuda"
+
+        class FakeCoreModel:
+            model_id = "fake/core"
+            supports_audio = False
+
+            def __init__(self):
+                self.device_map_at_load = None
+                self._core_llm_config = FakeCoreConfig
+
+            def load(self):
+                self.device_map_at_load = FakeCoreConfig.DEVICE_MAP
+
+        two = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", two, cards=2).load()
+        assert two.device_map_at_load == "auto", "a 2-card placement must shard"
+        assert FakeCoreConfig.DEVICE_MAP == "cuda", "and restore afterwards"
+
+        one = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", one, cards=1).load()
+        assert one.device_map_at_load == "cuda", "a 1-card placement stays pinned"
+
     def test_core_llm_adapter_honours_max_new_tokens(self):
         """The bug this pins: CoreLLMAdapter accepted max_new_tokens and
         silently discarded it, so runner.run_one(max_new_tokens=...) -- and

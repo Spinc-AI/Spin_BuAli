@@ -191,7 +191,24 @@ class CoreLLMAdapter:
 
     def load(self):
         started = time.perf_counter()
-        self._core_model.load()
+        # core_llm's classes hardcode `device_map=config.DEVICE_MAP`, which
+        # defaults to the string "cuda" -- a single GPU. That silently threw
+        # away the card count the tier system had already worked out: a
+        # placement of (fp16, 2 cards) for gemma-4-e4b (7.85B, ~15.7 GB at
+        # fp16) still loaded onto one 14.56 GB T4 and died with a CUDA OOM
+        # 68% of the way through the weights. "auto" is what lets accelerate
+        # shard across both cards, and is what LocalLLM already does for the
+        # same condition (`"auto" if self.cards > 1 else 0`).
+        core_config = getattr(self._core_model, "_core_llm_config", None)
+        if self.cards > 1 and core_config is not None:
+            original_device_map = core_config.DEVICE_MAP
+            core_config.DEVICE_MAP = "auto"
+            try:
+                self._core_model.load()
+            finally:
+                core_config.DEVICE_MAP = original_device_map
+        else:
+            self._core_model.load()
         self.load_seconds = time.perf_counter() - started
         return self
 

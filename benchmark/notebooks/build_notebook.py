@@ -104,7 +104,17 @@ print(f"\\nrunning commit {{commit}}")
 code("""
 # Everything the benchmark needs beyond what Kaggle ships. bitsandbytes and
 # accelerate are for the quantized (tier B) language models.
-!pip install -q python-dotenv sentencepiece bitsandbytes accelerate
+#
+# --upgrade transformers: Kaggle's preinstalled version does not recognise
+# the "gemma4" architecture at all -- AutoConfig.from_pretrained() fails on
+# gemma-4-e4b/12b with a bare KeyError before ever reaching model code,
+# confirmed live. Upgrading (not pinning down) is deliberate: MedGemma
+# (Gemma 3-based) and the seamless STT model already load fine on the
+# current version, and newer transformers releases keep support for
+# established architectures while adding new ones -- the risk profile here
+# is the opposite of downgrading, which is why phi-4-multimodal's fix
+# earlier avoided touching this version at all and this one does not.
+!pip install -q --upgrade transformers python-dotenv sentencepiece bitsandbytes accelerate
 """)
 
 # ── 3. Imports ───────────────────────────────────────────────────────────

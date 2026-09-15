@@ -59,10 +59,23 @@ def execute(run: dict, items, store, terms=None, devices=None,
     try:
         model.load()
     except Exception as error:  # noqa: BLE001 - the plan expected it to fit; it did not
+        model.unload()
         return _record_failure(run, store, f"LLM load failed: {error}", started)
+    except BaseException:
+        # BaseException, not Exception: an interrupt during "Loading
+        # weights..." is KeyboardInterrupt, which the clause above does not
+        # catch -- without this it propagates with the (partially) loaded
+        # model still resident on the GPU. Same fix as runner.run_one's.
+        model.unload()
+        raise
 
     try:
-        reports = pipeline.build_reports(transcripts, model, run["pipeline"])
+        # items carries both the audio path (which `multimodal` needs -- it
+        # sends the recording, not a transcript) and each recording's
+        # modality/region context. Omitting it made every multimodal run
+        # here fail per-recording, and dropped the context line from every
+        # run of either pipeline.
+        reports = pipeline.build_reports(transcripts, model, run["pipeline"], items=items)
     finally:
         # Free the weights before the next run needs the cards.
         model.unload()

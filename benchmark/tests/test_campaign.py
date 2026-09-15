@@ -172,6 +172,44 @@ class TestWorkingThrough:
                                  CARD, 2, pipelines=("separate",),
                                  preprocessing=("adaptive",))
 
+    def test_a_multimodal_session_reaches_the_audio_and_the_context(self, tone, tmp_path, factory):
+        """Two bugs this pins, both invisible until now because every other
+        session test uses pipelines=("separate",) only:
+
+        session.work_through called pipeline.build_reports without items, so
+        (a) every multimodal run failed per-recording -- multimodal sends the
+        recording itself, and the audio path comes from items -- and (b) the
+        modality/region context line never reached the prompt, for either
+        pipeline.
+        """
+        seen = []
+
+        class RecordingLLM:
+            model_key, precision, cards, load_seconds = "gemma-4-e4b", "fp16", 1, 0.0
+
+            def load(self):
+                return self
+
+            def unload(self):
+                pass
+
+            def generate(self, system_prompt, user_text, audio_path=None):
+                seen.append({"system": system_prompt, "audio_path": audio_path})
+                return json.dumps({"final_text": "a 6 mm stone in the right kidney"})
+
+        items = [Item("A1", tone("A1.wav", 1.0), "a 6 mm stone in the right kidney",
+                      modality="Ultrasound", regions=("Abdomen",))]
+        runs = plan_module.build(["whisper"], ["gemma-4-e4b"], CARD, 2,
+                                 pipelines=("multimodal",), preprocessing=("adaptive",))
+        assert runs, "expected at least one multimodal run in the plan"
+
+        session.work_through(runs, items, tmp_path, model_factory=factory,
+                             llm_factory=lambda run: RecordingLLM(), devices=["cpu"])
+
+        assert seen, "the LLM was never called -- build_reports failed before reaching it"
+        assert seen[0]["audio_path"] is not None, "multimodal got no recording"
+        assert "Modality: Ultrasound." in seen[0]["system"]
+
     def test_a_session_writes_a_csv_per_run(self, tone, tmp_path, factory):
         runs = self._plan()
         session.work_through(runs, self._items(tone), tmp_path, model_factory=factory,

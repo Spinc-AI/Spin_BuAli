@@ -21,6 +21,16 @@ there, because there is no loop.
 """
 import json
 import pathlib
+import sys
+
+# The rosters are read from runner.py, never restated here. They were
+# duplicated as literals once, with nothing pinning the two copies together
+# -- which meant a roster edit in runner.py would silently not reach the
+# generated notebook, the same class of drift this file's "no logic of its
+# own" rule exists to prevent everywhere else.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+import runner  # noqa: E402
 
 REPO_URL = "https://github.com/Spinc-AI/Spin_BuAli.git"
 BRANCH = "benchmark-selfcontained"
@@ -353,11 +363,11 @@ Two rosters, picked for a reason:
 * **`runner.TOP3_STT`** -- the three lowest-WER engines in `docs/STT_Models.pdf`.
 * **`runner.TOP3_LLM`** -- the three *lightest* LLMs by parameter count, used
   for the `separate` pipeline (text only, so audio capability doesn't matter):
-  {", ".join(f"`{k}`" for k in ["medgemma-1.5-4b", "gemma-4-e4b", "aya-expanse-8b"])}.
+  {", ".join(f"`{k}`" for k in runner.TOP3_LLM)}.
 * **`runner.MULTIMODAL_LLM`** -- the lightest **audio-capable** LLMs, used for
   `multimodal` (the LLM hears the recording directly, so a text-only model
   cannot run here at all):
-  {", ".join(f"`{k}`" for k in ["gemma-4-e4b", "gemma-4-12b"])}.
+  {", ".join(f"`{k}`" for k in runner.MULTIMODAL_LLM)}.
 
 **`phi-4-multimodal` is deliberately absent from both.** It cannot currently
 load on this environment -- confirmed across five rounds of real fixes
@@ -396,9 +406,18 @@ _llm_comment = {
     "gemma-4-12b": "google/gemma-4-12B-it -- 12B, audio-capable",
 }
 
-_top3_stt = ["seamless", "seamless-medium", "whisper"]
-_top3_llm = ["medgemma-1.5-4b", "gemma-4-e4b", "aya-expanse-8b"]
-_multimodal_llm = ["gemma-4-e4b", "gemma-4-12b"]
+# Read, not restated -- see this module's import block for why.
+_top3_stt = runner.TOP3_STT
+_top3_llm = runner.TOP3_LLM
+_multimodal_llm = runner.MULTIMODAL_LLM
+
+_missing = [k for k in _top3_stt + _top3_llm + _multimodal_llm
+            if k not in _stt_comment and k not in _llm_comment]
+if _missing:
+    raise SystemExit(
+        f"no description for {_missing} -- add one to _stt_comment/_llm_comment "
+        "above, so a roster change in runner.py cannot produce a notebook cell "
+        "whose heading says nothing about the model it runs.")
 
 _index = 0
 for stt_key in _top3_stt:

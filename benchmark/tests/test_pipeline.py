@@ -288,6 +288,52 @@ class TestModelSelection:
         model = llm_module.build("medgemma-1.5-4b", precision="fp16", cards=1)
         assert isinstance(model, llm_module.CoreLLMAdapter)
 
+    def test_core_llm_adapter_honours_max_new_tokens(self):
+        """The bug this pins: CoreLLMAdapter accepted max_new_tokens and
+        silently discarded it, so runner.run_one(max_new_tokens=...) -- and
+        the notebook's MAX_NEW_TOKENS knob, which exists specifically to
+        recover from truncated-JSON replies -- did nothing at all for every
+        model routed through this adapter (most of the roster)."""
+        class FakeCoreConfig:
+            MAX_NEW_TOKENS = 1536
+
+        class FakeCoreModel:
+            model_id = "fake/core"
+            supports_audio = False
+
+            def __init__(self):
+                self.seen = []
+                self._core_llm_config = FakeCoreConfig
+
+            def chat(self, messages, audio_path=None, temperature=0.3):
+                self.seen.append(FakeCoreConfig.MAX_NEW_TOKENS)
+                return "{}"
+
+        core = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", core, max_new_tokens=3072).generate("sys", "user")
+        assert core.seen == [3072], "the override must be visible during the call"
+        assert FakeCoreConfig.MAX_NEW_TOKENS == 1536, "and restored after it"
+
+    def test_no_override_leaves_core_llm_config_untouched(self):
+        class FakeCoreConfig:
+            MAX_NEW_TOKENS = 1536
+
+        class FakeCoreModel:
+            model_id = "fake/core"
+            supports_audio = False
+
+            def __init__(self):
+                self.seen = []
+                self._core_llm_config = FakeCoreConfig
+
+            def chat(self, messages, audio_path=None, temperature=0.3):
+                self.seen.append(FakeCoreConfig.MAX_NEW_TOKENS)
+                return "{}"
+
+        core = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", core).generate("sys", "user")
+        assert core.seen == [1536]
+
     def test_text_only_standard_keys_still_use_localllm(self):
         """Unchanged behaviour: aya-expanse and gemma-4-31b are plain
         TextOnlyModel in core_llm/model.py, functionally identical to

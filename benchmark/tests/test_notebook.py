@@ -105,6 +105,33 @@ class TestOneCellPerRun:
         run_cells = [c for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
         assert len(run_cells) == 11
 
+    def test_the_rosters_come_from_runner_not_a_second_copy(self, notebook):
+        """The drift this pins: build_notebook.py restated all three rosters
+        as literals, with nothing tying them to runner.py -- so a roster edit
+        there would silently not reach the generated notebook. Every model
+        runner names must appear in a run cell, and no run cell may name a
+        model runner doesn't."""
+        import sys
+
+        sys.path.insert(0, str(REPO / "benchmark"))
+        import runner
+
+        run_cells = [source_of(c) for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
+        named = set()
+        for source in run_cells:
+            for key in set(runner.TOP3_STT) | set(runner.TOP3_LLM) | set(runner.MULTIMODAL_LLM):
+                if f'"{key}"' in source:
+                    named.add(key)
+
+        expected = set(runner.TOP3_STT) | set(runner.TOP3_LLM) | set(runner.MULTIMODAL_LLM)
+        assert named == expected, f"notebook and runner.py disagree: {named ^ expected}"
+
+        # And the counts follow from the rosters, not from a hardcoded number.
+        separate = [s for s in run_cells if '"separate"' in s]
+        multimodal = [s for s in run_cells if '"multimodal"' in s]
+        assert len(separate) == len(runner.TOP3_STT) * len(runner.TOP3_LLM)
+        assert len(multimodal) == len(runner.MULTIMODAL_LLM)
+
     def test_no_cell_loops_over_multiple_runs(self, notebook):
         """The whole point: a `for` loop calling run_one several times would
         put several runs behind one cell, and stopping the session mid-loop

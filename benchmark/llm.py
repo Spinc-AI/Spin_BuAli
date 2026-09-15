@@ -174,12 +174,9 @@ class CoreLLMAdapter:
     is holding.
 
     Audio and text handling both live in `core_llm/model.py`, not duplicated
-    here -- see `bridge.py`'s module docstring for why. The trade-off: unlike
-    `LocalLLM`, this never quantizes (`core_llm/` doesn't), and
-    `max_new_tokens` overrides are not supported here yet -- `core_llm/`
-    reads `MAX_NEW_TOKENS` from its own environment at import time, so the
-    workaround is to set that env var before the notebook's imports run,
-    not per-cell.
+    here -- see `bridge.py`'s module docstring for why. The one trade-off
+    left: unlike `LocalLLM`, this never quantizes (`core_llm/` doesn't).
+    `max_new_tokens` *is* honoured -- see `generate()` for how.
     """
 
     def __init__(self, model_key: str, core_model, precision: str = "fp16",
@@ -188,6 +185,7 @@ class CoreLLMAdapter:
         self.model_id = core_model.model_id
         self.precision = precision
         self.cards = cards
+        self.max_new_tokens = max_new_tokens
         self.load_seconds = 0.0
         self._core_model = core_model
 
@@ -204,7 +202,24 @@ class CoreLLMAdapter:
                     {"role": "user", "content": user_text or ""}]
         # temperature <= 0.01 means greedy decoding, matching LocalLLM's
         # do_sample=False -- a benchmark wants repeatable runs, not variety.
-        return self._core_model.chat(messages, audio_path=audio_path, temperature=0.0)
+        core_config = getattr(self._core_model, "_core_llm_config", None)
+        if self.max_new_tokens is None or core_config is None:
+            return self._core_model.chat(messages, audio_path=audio_path, temperature=0.0)
+
+        # core_llm's classes read MAX_NEW_TOKENS off their own config module
+        # at call time rather than taking it as an argument, so honouring a
+        # per-run override means setting it there and putting it back.
+        # bridge.build_llm_model stashes that module on the instance for
+        # exactly this. Without it, `runner.run_one(max_new_tokens=...)` --
+        # and the notebook's MAX_NEW_TOKENS knob, which exists specifically
+        # to recover from truncated-JSON replies -- silently did nothing for
+        # every model that routes through this adapter.
+        original = core_config.MAX_NEW_TOKENS
+        core_config.MAX_NEW_TOKENS = self.max_new_tokens
+        try:
+            return self._core_model.chat(messages, audio_path=audio_path, temperature=0.0)
+        finally:
+            core_config.MAX_NEW_TOKENS = original
 
     def unload(self):
         self._core_model.unload()

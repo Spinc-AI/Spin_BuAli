@@ -147,7 +147,11 @@ class SeamlessV1Model(BaseSTTModel):
     def transcribe(self, audio, sr, language=None):
         audio = resample(audio, sr)
         inputs = self._processor(
-            audios=audio, sampling_rate=config.TARGET_SAMPLE_RATE, return_tensors="pt"
+            # Singular `audio`, never the plural spelling: the latter was
+            # deprecated and is a hard ValueError from transformers v5 on,
+            # which failed every recording this model saw while
+            # SeamlessV2Model (already singular) was unaffected.
+            audio=audio, sampling_rate=config.TARGET_SAMPLE_RATE, return_tensors="pt"
         )
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         tgt_lang = SEAMLESS_LANGUAGE_CODES.get(language, language) if language else self.tgt_lang

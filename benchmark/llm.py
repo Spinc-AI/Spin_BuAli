@@ -54,6 +54,26 @@ def _torch():
     return torch
 
 
+def emptiest_cuda_device() -> str | None:
+    """`cuda:<i>` for the card with the most free memory, or None without CUDA.
+
+    A single-card placement does not care *which* card, only that the model
+    fits on one -- so it should take the emptiest rather than always cuda:0.
+    Whatever ran before does not always give every byte back (a failed STT
+    load left ~9 GB on cuda:0 in a live run while cuda:1 sat completely
+    free), and defaulting to cuda:0 turns that into an avoidable OOM on a
+    machine with room to spare.
+    """
+    torch = bridge.torch_or_none()
+    if torch is None or not torch.cuda.is_available():
+        return None
+    free_by_index = [(torch.cuda.mem_get_info(i)[0], i)
+                     for i in range(torch.cuda.device_count())]
+    if not free_by_index:
+        return None
+    return f"cuda:{max(free_by_index)[1]}"
+
+
 class LocalLLM:
     """One local model, loaded at a given precision across a given card count.
 
@@ -200,9 +220,10 @@ class CoreLLMAdapter:
         # shard across both cards, and is what LocalLLM already does for the
         # same condition (`"auto" if self.cards > 1 else 0`).
         core_config = getattr(self._core_model, "_core_llm_config", None)
-        if self.cards > 1 and core_config is not None:
+        target = "auto" if self.cards > 1 else emptiest_cuda_device()
+        if core_config is not None and target is not None:
             original_device_map = core_config.DEVICE_MAP
-            core_config.DEVICE_MAP = "auto"
+            core_config.DEVICE_MAP = target
             try:
                 self._core_model.load()
             finally:

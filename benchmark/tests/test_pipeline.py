@@ -288,6 +288,45 @@ class TestModelSelection:
         model = llm_module.build("medgemma-1.5-4b", precision="fp16", cards=1)
         assert isinstance(model, llm_module.CoreLLMAdapter)
 
+    def test_the_stt_models_use_the_singular_audio_kwarg(self):
+        """`audios=` was deprecated and is a hard ValueError from transformers
+        v5 on. SeamlessV1Model still used it, so seamless-medium failed every
+        recording while SeamlessV2Model (already singular) was fine.
+
+        Read as text, not imported -- stt/app/model.py imports torch at module
+        level, and this suite deliberately runs without it."""
+        import re
+
+        import settings
+
+        source = (settings.REPO_ROOT / "stt" / "app" / "model.py").read_text(encoding="utf-8")
+        assert not re.search(r"\baudios\s*=", source), (
+            "a processor call still passes audios=; transformers v5 rejects it")
+
+    def test_a_single_card_placement_takes_the_emptiest_card(self, monkeypatch):
+        """Not always cuda:0: whatever ran before does not always give every
+        byte back, and a 1-card model has no reason to insist on a busy card
+        when another is free."""
+        class FakeCoreConfig:
+            DEVICE_MAP = "cuda"
+
+        class FakeCoreModel:
+            model_id = "fake/core"
+            supports_audio = False
+
+            def __init__(self):
+                self.device_map_at_load = None
+                self._core_llm_config = FakeCoreConfig
+
+            def load(self):
+                self.device_map_at_load = FakeCoreConfig.DEVICE_MAP
+
+        monkeypatch.setattr(llm_module, "emptiest_cuda_device", lambda: "cuda:1")
+        core = FakeCoreModel()
+        llm_module.CoreLLMAdapter("k", core, cards=1).load()
+        assert core.device_map_at_load == "cuda:1"
+        assert FakeCoreConfig.DEVICE_MAP == "cuda", "restored afterwards"
+
     def test_core_llm_adapter_shards_across_cards(self):
         """The bug this pins: CoreLLMAdapter stored `cards` and never used
         it, while core_llm's classes hardcode device_map="cuda" (one GPU).

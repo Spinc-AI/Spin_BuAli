@@ -52,9 +52,9 @@ def code(text):
 md(f"""
 # Spin BuAli — radiology pipeline benchmark
 
-Runs English-dominant radiology dictations (Persian words mixed in) through
-**speech recognition → language model** and scores the finished report
-against the radiologist's signed one.
+Hands English-dominant radiology dictations (Persian words mixed in) straight
+to an **audio-capable language model** — no transcription step — and scores
+the report it produces against the radiologist's signed one.
 
 **Every run is its own cell**, and each one writes its own CSV before the cell
 finishes. Stop the session whenever you like — nothing already run needs to be
@@ -133,6 +133,16 @@ code("""
 # safetensors come along because v5 needs newer ones than 4.x shipped.
 !pip install -q --no-deps --upgrade "transformers>=5.5.0" tokenizers huggingface-hub safetensors
 !pip install -q python-dotenv sentencepiece bitsandbytes accelerate
+# Two audio front-ends that are not optional extras:
+#   mistral-common[audio]  Voxtral tokenizes through mistral-common, not a
+#                          Jinja template, and its processor is what opens the
+#                          file named by the chat message's `path`.
+#   librosa                Qwen2-Audio's processor does NOT load audio itself;
+#                          the waveform is decoded and resampled to 16 kHz by
+#                          the caller (core_llm/model.py's Qwen2AudioModel).
+# Installed WITH their dependencies, unlike the HF stack above -- neither
+# pins numpy, and the version cell below is what catches it if that changes.
+!pip install -q "mistral-common[audio]" librosa
 """)
 
 code('''
@@ -265,11 +275,13 @@ def check_access(repo_ids):
     return reachable, blocked
 
 
-stt_repos = [spec["model_id"] for spec in bridge.model_registry().values()]
-llm_repos = [llm._hugging_face_id(key) for key in plan.LLM_PARAMS]
+# Only what this notebook actually loads. Checking every registered STT
+# engine too would report a blocked checkpoint for a model no cell here runs,
+# which reads as a problem and is not one.
+llm_repos = [llm._hugging_face_id(key) for key in runner.MULTIMODAL_LLM]
 
-reachable, blocked = check_access(stt_repos + llm_repos)
-print(f"{len(reachable)} of {len(stt_repos) + len(llm_repos)} checkpoints reachable")
+reachable, blocked = check_access(llm_repos)
+print(f"{len(reachable)} of {len(llm_repos)} checkpoints reachable")
 for repo, reason in blocked:
     print(f"  BLOCKED  {repo}")
     print(f"           {reason}   ->   https://huggingface.co/{repo}")
@@ -321,10 +333,9 @@ for item in clips:
 md("""
 ## 6 — Run configuration
 
-Shared settings every run cell below reads -- windowing, the report-structure
-addendum, the token cap, and where results land. The STT and LLM rosters
-themselves are fixed (`runner.TOP3_STT`, `runner.TOP3_LLM`,
-`runner.MULTIMODAL_LLM`); see cell 7 for why each list holds what it holds.
+Shared settings every run cell below reads -- the report-structure addendum,
+the token cap, and where results land. The roster itself is fixed
+(`runner.MULTIMODAL_LLM`); see cell 7 for what is in it and why.
 
 **The addendum is not part of `controller/prompts.py`.** `report_structure.GUIDE`
 (`SECTION_ORDER`, `BOILERPLATE_ANCHORS`) was *read off* the nine reference
@@ -341,27 +352,25 @@ somehow illegitimate.
 """)
 
 code("""
+# LANGUAGE, DEVICES and PREPROCESSING only reach the STT stage, which a
+# multimodal run does not have -- they are kept so a `separate` cell can be
+# pasted back in unchanged, and because PREPROCESSING still names the run.
 LANGUAGE = "en"                # the dictation is English-dominant, Persian words mixed in
-# None = one STT replica on whichever card has the most room when the run
-# starts. A fixed ["cuda:0"] kept aiming at the card previous runs had left
-# occupied, and OOMed mid-transcription with the other card sitting free.
-# Set an explicit list to pin it.
-DEVICES = None
-
-# How the recording is windowed before it reaches the STT model. adaptive
-# listens to the audio and snaps cuts to quiet moments; the -vad variants
-# chunk within detected speech regions so a long pause becomes a boundary
-# instead of something a window spends itself on. None means fixed windows.
+DEVICES = None                 # None = whichever card has the most room when the run starts
 PREPROCESSING = "adaptive"     # None | "fixed" | "uniform" | "adaptive" | "adaptive-vad"
-print("preprocessing options:", {**plan.PREPROCESSING, None: "fixed windows, no chunking module"})
 
 STRUCTURE_GUIDE = report_structure.GUIDE   # None scores the bare controller prompt -- see cell 6's note above
 
-# The `separate` pipeline asks for three full fields (raw_transcript,
-# corrected_transcript, final_text) -- easy to overrun the 1536-token default
-# on a real report. A generation cut off mid-JSON shows up as "no JSON object
-# found" or a JSONDecodeError, and only on the longer clips, since the model
-# never reached the closing brace. Raise this if a run shows that pattern.
+# The prompt asks for three full fields (raw_transcript, corrected_transcript,
+# final_text) -- easy to overrun the 1536-token default on a real report. A
+# generation cut off mid-JSON shows up as "no JSON object found" or a
+# JSONDecodeError, and only on the longer clips, since the model never reached
+# the closing brace. Raise this if a run shows that pattern.
+#
+# It is NOT the fix for the other failure in the last round -- a model that
+# repeats one sentence until it runs out of budget ("There is a large left
+# side of the stone." x60). More tokens just buys more repetition; that one is
+# the model, not the cap.
 MAX_NEW_TOKENS = None          # None uses settings.LLM_MAX_NEW_TOKENS (1536); try 3072 if truncating
 
 RESULTS_DIR = pathlib.Path("/kaggle/working/results")
@@ -378,42 +387,52 @@ def placement_for(llm_key):
 
 # ── 7. Runs ──────────────────────────────────────────────────────────────
 md(f"""
-## 7 — Runs: 3 STT engines x 3 LLMs (`separate`), plus 2 LLMs (`multimodal`)
+## 7 — Runs: {len(runner.MULTIMODAL_LLM)} audio-capable LLMs, `multimodal` only
 
-Two rosters, picked for a reason:
+**`separate` is not in this notebook.** It is still a real pipeline in
+`benchmark/pipeline.py` and `controller/pipelines.py` — this notebook just
+doesn't run it. On this dataset the STT stage was the whole result: seamless
+returned text like *"the graphics card has a one-to-two-mile radius in
+Madrid"* for a kidney ultrasound, and every LLM downstream then scored near
+WER 1.0 for correctly refusing to invent a report out of noise. That measures
+one STT engine's failure, not the language models. Re-add those cells when
+there is an STT engine worth putting in front of them — nothing in the repo
+was removed.
 
-* **`runner.TOP3_STT`** -- the three lowest-WER engines in `docs/STT_Models.pdf`.
-* **`runner.TOP3_LLM`** -- the three *lightest* LLMs by parameter count, used
-  for the `separate` pipeline (text only, so audio capability doesn't matter):
-  {", ".join(f"`{k}`" for k in runner.TOP3_LLM)}.
-* **`runner.MULTIMODAL_LLM`** -- the lightest **audio-capable** LLMs, used for
-  `multimodal` (the LLM hears the recording directly, so a text-only model
-  cannot run here at all):
-  {", ".join(f"`{k}`" for k in runner.MULTIMODAL_LLM)}.
+So every cell here is one **`multimodal`** run: the LLM is handed the
+recording itself and produces the report in a single call, with no
+transcription step anywhere. `runner.MULTIMODAL_LLM` is the roster —
+every audio-capable model this hardware can hold at some precision, lightest
+first:
 
-**`phi-4-multimodal` is deliberately absent from both.** It cannot currently
-load on this environment -- confirmed across five rounds of real fixes
-(missing pip deps, a stale import, a `from_pretrained` kwarg its own config
-class ignores, a `flash_attn` dependency worked around via eager attention),
-ending on a meta-tensor incompatibility inside its own vendor code that no
-caller-side fix resolves. Its checkpoint stays registered in
-`core_llm/model.py` for whoever eventually resolves this; see `runner.py`'s
-comment above `TOP3_LLM` for the full history.
+{chr(10).join(f"* `{k}`" for k in runner.MULTIMODAL_LLM)}
 
-3 STT x 3 LLM = 9 `separate` runs, + 2 `multimodal` runs (one per
-audio-capable LLM, no STT stage) = **11 runs, 11 cells**.
+Three vendors on purpose (Mistral, Google, Alibaba). One vendor's audio
+front-end across every row would make a family-wide weakness look like a
+property of the task.
 
-**To add a run:** copy a cell and change its `stt_key`/`llm_key`/`pipeline`/
-`label`. Every cell is independent -- stopping the session after any of them
-loses nothing.
+**Precision comes from cell 3's tier table, and is now actually applied.**
+Previously a model placed at `int8` still loaded at full precision — the
+adapter stored the placement and never used it — so gemma-4-12b put ~24 GB of
+fp16 weights onto a 14.56 GB card, failed, and stamped the CSV `int8` anyway.
+A placement that cannot be honoured now raises instead.
 
-**Speech recognition is cached.** Running several LLMs against the same STT
-engine transcribes once -- the cache key is `(preprocessing, stt_key)` only,
-so it doesn't care which LLM or pipeline asked for it. A cell that reused a
-cached transcript prints `-- cached, skipping transcription` and its CSV's
-`stt_cached` column is `True`. The cache lives in `RESULTS_DIR/transcripts/`;
-delete a file there to force that one pair to be redone, or pass
-`use_cache=False` to force a cell to redo it regardless.
+**`phi-4-multimodal` is deliberately absent.** It cannot currently load on
+this environment — confirmed across five rounds of real fixes (missing pip
+deps, a stale import, a `from_pretrained` kwarg its own config class ignores,
+a `flash_attn` dependency worked around via eager attention), ending on a
+meta-tensor incompatibility inside its own vendor code that no caller-side fix
+resolves. Its checkpoint stays registered in `core_llm/model.py` for whoever
+eventually resolves this; see `runner.py`'s comment above `TOP3_LLM`.
+
+**{len(runner.MULTIMODAL_LLM)} runs, {len(runner.MULTIMODAL_LLM)} cells.**
+
+**To add a run:** copy a cell and change its `llm_key` and `label`. Every cell
+is independent — stopping the session after any of them loses nothing.
+
+**There is no transcript cache here**, because there is no STT stage to cache.
+Each cell does its full work from the audio. (The cache in
+`RESULTS_DIR/transcripts/` only ever serves `separate`.)
 
 **Memory is cleared at the start of every run, not just the end.** Each cell
 prints free VRAM per card before it allocates. A run that dies mid-load
@@ -426,54 +445,40 @@ than half used after that, something outside this process holds it and only
 a kernel restart will clear it -- the cell says so when it happens.
 """)
 
-_stt_comment = {
-    "seamless": "facebook/seamless-m4t-v2-large -- WER 0.107 in the PDF",
-    "seamless-medium": "facebook/hf-seamless-m4t-medium -- WER 0.134",
-    "whisper": "nezamisafa/whisper-persian-v4 -- WER 0.137",
-}
 _llm_comment = {
-    "medgemma-1.5-4b": "google/medgemma-1.5-4b-it -- 4.3B, text only",
-    "gemma-4-e4b": "google/gemma-4-E4B-it -- 7.85B, audio-capable",
-    "aya-expanse-8b": "CohereLabs/aya-expanse-8b -- 8.03B, text only",
-    "gemma-4-12b": "google/gemma-4-12B-it -- 12B, audio-capable",
+    "voxtral-mini-3b":
+        "mistralai/Voxtral-Mini-3B-2507 — 4.7B. A Whisper-large-v3 encoder in "
+        "front of Ministral 3B. The only model here that fits one card at fp16.",
+    "gemma-4-e4b":
+        "google/gemma-4-E4B-it — 7.85B, encoder-free (\"Unified\") audio. The "
+        "\"E4B\" is effective compute, not the on-disk parameter count.",
+    "qwen2-audio-7b":
+        "Qwen/Qwen2-Audio-7B-Instruct — 8.4B. Trained explicitly for "
+        "instruction-following over audio, not just transcription.",
+    "gemma-4-12b":
+        "google/gemma-4-12B-it — 12B, the largest audio-capable Gemma 4. Runs "
+        "quantized here; its score includes whatever that costs.",
+    "qwen3-omni-30b":
+        "Qwen/Qwen3-Omni-30B-A3B-Instruct — 30.5B MoE, Thinker-only. **The "
+        "slowest cell by far**: 4-bit weights across both cards, and "
+        "transformers' own docs flag MoE inference through this path as slow. "
+        "Run it last, or skip it.",
 }
 
 # Read, not restated -- see this module's import block for why.
-_top3_stt = runner.TOP3_STT
-_top3_llm = runner.TOP3_LLM
 _multimodal_llm = runner.MULTIMODAL_LLM
 
-_missing = [k for k in _top3_stt + _top3_llm + _multimodal_llm
-            if k not in _stt_comment and k not in _llm_comment]
+_missing = [k for k in _multimodal_llm if k not in _llm_comment]
 if _missing:
     raise SystemExit(
-        f"no description for {_missing} -- add one to _stt_comment/_llm_comment "
-        "above, so a roster change in runner.py cannot produce a notebook cell "
-        "whose heading says nothing about the model it runs.")
+        f"no description for {_missing} -- add one to _llm_comment above, so a "
+        "roster change in runner.py cannot produce a notebook cell whose "
+        "heading says nothing about the model it runs.")
 
 _index = 0
-for stt_key in _top3_stt:
-    for llm_key in _top3_llm:
-        _index += 1
-        md(f"### 7.{_index} — `separate`: `{stt_key}` + `{llm_key}`\n\n"
-           f"{_stt_comment[stt_key]}  \n{_llm_comment[llm_key]}")
-        code(f'''
-PRECISION, CARDS = placement_for("{llm_key}")
-df_{_index:02d} = runner.run_one(
-    "{stt_key}", "{llm_key}", "separate", clips,
-    language=LANGUAGE, devices=DEVICES, precision=PRECISION, cards=CARDS,
-    preprocessing=PREPROCESSING, structure_guide=STRUCTURE_GUIDE, results_dir=RESULTS_DIR,
-    max_new_tokens=MAX_NEW_TOKENS,
-    label="{_index:02d}_{stt_key}__{llm_key}__separate__" + str(PREPROCESSING),
-)
-df_{_index:02d}[df_{_index:02d}["asset_id"] != "SUMMARY"][
-    ["asset_id", "wer", "medical_term_f1", "negation_errors",
-     "laterality_errors", "number_errors", "requires_medical_review"]]
-''')
-
 for llm_key in _multimodal_llm:
     _index += 1
-    md(f"### 7.{_index} — `multimodal`: `{llm_key}` (no STT stage)\n\n{_llm_comment[llm_key]}")
+    md(f"### 7.{_index} — `{llm_key}`\n\n{_llm_comment[llm_key]}")
     code(f'''
 PRECISION, CARDS = placement_for("{llm_key}")
 df_{_index:02d} = runner.run_one(

@@ -79,14 +79,23 @@ TOP3_LLM = [
     "aya-expanse-8b",    # 8.03B -> ~16.1 GB
 ]
 
-# The lightest AUDIO-CAPABLE LLMs -- used for the `multimodal` pipeline,
-# where the LLM hears the recording directly and text-only models
-# (medgemma-1.5-4b, aya-expanse-8b) cannot run at all. Only two, not three:
-# phi-4-multimodal would have been the third-lightest, and is excluded for
-# the reason documented above TOP3_LLM.
+# Every AUDIO-CAPABLE LLM that a 2x16 GB machine can hold at some precision,
+# lightest first. The `multimodal` pipeline hands the recording straight to
+# the LLM, so text-only models (medgemma-1.5-4b, aya-expanse-8b) cannot run
+# here at all and the roster is not the same as TOP3_LLM.
+#
+# Five families, deliberately: Mistral, Google, Alibaba. Sharing one vendor's
+# audio front-end across every row would make a family-wide weakness look
+# like a property of the task.
+#
+# phi-4-multimodal would sit second in this list by weight and is excluded
+# for the reason documented above TOP3_LLM.
 MULTIMODAL_LLM = [
-    "gemma-4-e4b",       # 7.85B -> ~15.7 GB
-    "gemma-4-12b",       # 12B   -> ~24 GB
+    "voxtral-mini-3b",   # 4.7B  -> ~10.8 GB   fp16, one card
+    "gemma-4-e4b",       # 7.85B -> ~18.1 GB   fp16, two cards
+    "qwen2-audio-7b",    # 8.4B  -> ~19.3 GB   fp16, two cards
+    "gemma-4-12b",       # 12B   -> ~13.8 GB   int8, two cards
+    "qwen3-omni-30b",    # 30.5B -> ~17.5 GB   nf4,  two cards
 ]
 
 

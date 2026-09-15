@@ -33,12 +33,18 @@ LLM_PARAMS = {
     "qwen3-omni-30b": 30.5,
     "medgemma-1.5-4b": 4.3,
     "phi-4-multimodal": 5.6,
+    # Whisper-large-v3 encoder + projector + Ministral 3B. HF rounds the
+    # checkpoint to "5B"; 4.7 is the figure the two halves actually add to,
+    # and both land on the same placement anyway.
+    "voxtral-mini-3b": 4.7,
+    "qwen2-audio-7b": 8.4,
 }
 
 # Which local LLMs can take audio. `separate` sends text only, so it can use
 # any of them; `multimodal` cannot. medgemma-1.5-4b is deliberately absent --
 # it has no audio input at all, despite being one of the lightest models here.
-AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b", "phi-4-multimodal"}
+AUDIO_CAPABLE = {"gemma-4-e4b", "gemma-4-12b", "qwen3-omni-30b", "phi-4-multimodal",
+                 "voxtral-mini-3b", "qwen2-audio-7b"}
 
 # Keys whose core_llm/model.py class is the plain TextOnlyModel -- a vanilla
 # AutoModelForCausalLM + AutoTokenizer, functionally identical to what

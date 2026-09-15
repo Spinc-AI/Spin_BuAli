@@ -20,12 +20,21 @@ reusing one) and adding a ``MODEL_REGISTRY`` entry; nothing in main.py changes.
                        Microsoft's own custom modeling code
                        (trust_remote_code=True) rather than a standard
                        transformers architecture.
+  VoxtralModel         Mistral Voxtral Mini 3B. Text and audio; the lightest
+                       audio-in model here, and tokenized through
+                       mistral-common rather than a Jinja template.
+  Qwen2AudioModel      Qwen2-Audio-7B-Instruct. Text and audio; the one class
+                       whose processor does not load the audio file itself.
 
-Two deliberate trade-offs:
-  - No Ollama. It cannot accept audio input at all, so keeping it would mean
-    two serving paths side by side when several of these models do both roles.
-  - No quantization, so models load at full bf16/fp16 precision and need more
-    VRAM than a quantized equivalent. Revisit with bitsandbytes if that bites.
+Precision is set by ``config.QUANTIZATION`` -- None for native fp16/bf16, or
+"int8"/"nf4" through bitsandbytes. The service leaves it None; the benchmark
+sets it per run, because its tier system places some models at a compressed
+precision to fit a 16 GB card at all. Every ``from_pretrained`` here goes
+through ``_load_kwargs()`` so that setting cannot be missed by one call site.
+
+One deliberate trade-off remains: no Ollama. It cannot accept audio input at
+all, so keeping it would mean two serving paths side by side when most of
+these models do both roles.
 """
 import gc
 import tempfile
@@ -40,12 +49,51 @@ from transformers import (
     AutoModelForMultimodalLM,
     AutoProcessor,
     AutoTokenizer,
+    BitsAndBytesConfig,
     GenerationConfig,
+    Qwen2AudioForConditionalGeneration,
     Qwen3OmniMoeProcessor,
     Qwen3OmniMoeThinkerForConditionalGeneration,
+    VoxtralForConditionalGeneration,
 )
 
 import config
+
+
+def _quantization_config():
+    """A `BitsAndBytesConfig` for `config.QUANTIZATION`, or None for native.
+
+    fp16 compute rather than bf16 because the benchmark's cards are Turing
+    (T4), which has no bf16 units at all -- asking for it there is slow at
+    best. Double quantization on the 4-bit path saves a further ~0.4 bits per
+    weight, which is the difference between fitting and not at the 30B tier.
+    """
+    if not config.QUANTIZATION:
+        return None
+    if config.QUANTIZATION == "int8":
+        return BitsAndBytesConfig(load_in_8bit=True)
+    if config.QUANTIZATION == "nf4":
+        return BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.float16)
+    raise ValueError(
+        f"unknown QUANTIZATION {config.QUANTIZATION!r} -- expected None, 'int8' or 'nf4'")
+
+
+def _load_kwargs(**extra) -> dict:
+    """The `from_pretrained` kwargs every model class here shares.
+
+    One place, so a model added later cannot quietly ignore `DEVICE_MAP` or
+    `QUANTIZATION` the way each hand-written call site could.
+    """
+    kwargs = {"device_map": config.DEVICE_MAP, **extra}
+    quantization = _quantization_config()
+    if quantization is not None:
+        kwargs["quantization_config"] = quantization
+        # bitsandbytes picks its own storage dtype for the quantized weights;
+        # a dtype= alongside it is either ignored or an outright conflict.
+        kwargs.pop("dtype", None)
+    return kwargs
 
 
 def _generation_kwargs(temperature: float) -> dict:
@@ -102,7 +150,7 @@ class TextOnlyModel(BaseLLM):
     def load(self):
         self._processor = AutoTokenizer.from_pretrained(self.model_id)
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, device_map=config.DEVICE_MAP, dtype="auto"
+            self.model_id, **_load_kwargs(dtype="auto")
         )
 
     def chat(self, messages, audio_path=None, temperature=0.3):
@@ -134,7 +182,7 @@ class GemmaAudioModel(BaseLLM):
     def load(self):
         self._processor = AutoProcessor.from_pretrained(self.model_id, padding_side="left")
         self._model = AutoModelForMultimodalLM.from_pretrained(
-            self.model_id, device_map=config.DEVICE_MAP, attn_implementation="sdpa"
+            self.model_id, **_load_kwargs(attn_implementation="sdpa")
         )
 
     def chat(self, messages, audio_path=None, temperature=0.3):
@@ -180,7 +228,7 @@ class QwenOmniModel(BaseLLM):
     def load(self):
         self._processor = Qwen3OmniMoeProcessor.from_pretrained(self.model_id)
         self._model = Qwen3OmniMoeThinkerForConditionalGeneration.from_pretrained(
-            self.model_id, device_map=config.DEVICE_MAP
+            self.model_id, **_load_kwargs()
         )
 
     def chat(self, messages, audio_path=None, temperature=0.3):
@@ -243,7 +291,7 @@ class MedGemmaTextModel(BaseLLM):
     def load(self):
         self._processor = AutoProcessor.from_pretrained(self.model_id)
         self._model = AutoModelForImageTextToText.from_pretrained(
-            self.model_id, device_map=config.DEVICE_MAP, dtype="auto"
+            self.model_id, **_load_kwargs(dtype="auto")
         )
 
     def chat(self, messages, audio_path=None, temperature=0.3):
@@ -387,6 +435,118 @@ class Phi4MultimodalModel(BaseLLM):
             clean_up_tokenization_spaces=False)[0]
 
 
+class VoxtralModel(BaseLLM):
+    """Mistral's Voxtral -- a Whisper encoder, a projector and a Ministral
+    language model, exposed as one `VoxtralForConditionalGeneration`.
+
+    The lightest audio-in chat model here by some margin (~4.7B all in), which
+    is the reason it is registered: it is the only one that fits a single 16 GB
+    card at fp16 with room to spare for a long generation.
+
+    Two conventions differ from the Gemma/Qwen classes above:
+
+    * `system` content stays a plain string. Voxtral tokenizes through
+      mistral-common rather than a Jinja template, and mistral-common's
+      `SystemMessage` takes text, not a list of typed parts.
+    * `apply_chat_template` returns model-ready inputs directly -- no
+      `tokenize=`/`return_dict=` arguments, and the audio named by `path` is
+      loaded by the processor itself.
+
+    That audio loading is why `mistral-common[audio]` is a real install-time
+    dependency, not an optional extra: without it the `path` part raises
+    rather than degrading to text-only.
+    """
+
+    supports_audio = True
+
+    def load(self):
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = VoxtralForConditionalGeneration.from_pretrained(
+            self.model_id, **_load_kwargs(dtype=torch.float16)
+        )
+
+    def chat(self, messages, audio_path=None, temperature=0.3):
+        last_user = _last_user_index(messages) if audio_path else -1
+        converted = []
+        for i, m in enumerate(messages):
+            if m["role"] == "system":
+                converted.append({"role": "system", "content": m["content"]})
+                continue
+            content = []
+            if audio_path and i == last_user:
+                # Audio first, matching the model's own reference examples.
+                # str(), not the Path itself -- see GemmaAudioModel.
+                content.append({"type": "audio", "path": str(audio_path)})
+            if m["content"]:
+                content.append({"type": "text", "text": m["content"]})
+            converted.append({"role": m["role"], "content": content})
+
+        inputs = self._processor.apply_chat_template(converted).to(self._model.device)
+        input_len = inputs["input_ids"].shape[-1]
+        with torch.no_grad():
+            outputs = self._model.generate(**inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                                           **_generation_kwargs(temperature))
+        return self._processor.batch_decode(
+            outputs[:, input_len:], skip_special_tokens=True)[0]
+
+
+class Qwen2AudioModel(BaseLLM):
+    """Qwen2-Audio-7B-Instruct, via `Qwen2AudioForConditionalGeneration`.
+
+    Alone among the audio classes here, its processor does **not** load the
+    audio file itself: `apply_chat_template` is text-only (`tokenize=False`)
+    and the waveform goes to `processor(text=..., audio=[...])` separately,
+    already decoded and resampled to the feature extractor's rate. That is the
+    shape the model's own documentation uses, and skipping the resample is not
+    optional -- the mel features are defined at 16 kHz and a 44.1 kHz array
+    silently produces a four-times-too-long spectrogram rather than an error.
+
+    `system` content is a plain string, as in that same documentation.
+    """
+
+    supports_audio = True
+
+    def load(self):
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
+        self._model = Qwen2AudioForConditionalGeneration.from_pretrained(
+            self.model_id, **_load_kwargs(dtype=torch.float16)
+        )
+
+    def chat(self, messages, audio_path=None, temperature=0.3):
+        import librosa
+
+        last_user = _last_user_index(messages) if audio_path else -1
+        converted = []
+        for i, m in enumerate(messages):
+            if m["role"] == "system":
+                converted.append({"role": "system", "content": m["content"]})
+                continue
+            content = []
+            if audio_path and i == last_user:
+                content.append({"type": "audio", "audio_url": str(audio_path)})
+            if m["content"]:
+                content.append({"type": "text", "text": m["content"]})
+            converted.append({"role": m["role"], "content": content})
+
+        text = self._processor.apply_chat_template(
+            converted, add_generation_prompt=True, tokenize=False)
+        audios = None
+        if audio_path:
+            waveform, _ = librosa.load(
+                str(audio_path), sr=self._processor.feature_extractor.sampling_rate)
+            audios = [waveform]
+
+        inputs = self._processor(text=text, audio=audios, return_tensors="pt",
+                                 padding=True).to(self._model.device)
+        input_len = inputs["input_ids"].shape[-1]
+        with torch.no_grad():
+            outputs = self._model.generate(**inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                                           **_generation_kwargs(temperature))
+        return self._processor.batch_decode(
+            outputs[:, input_len:], skip_special_tokens=True,
+            clean_up_tokenization_spaces=False)[0]
+
+
 # ============================================================
 # Registry
 # ============================================================
@@ -399,6 +559,8 @@ MODEL_REGISTRY = {
     "qwen3-omni-30b": (QwenOmniModel, config.QWEN_OMNI_MODEL_ID),
     "medgemma-1.5-4b": (MedGemmaTextModel, config.MEDGEMMA_4B_MODEL_ID),
     "phi-4-multimodal": (Phi4MultimodalModel, config.PHI4_MULTIMODAL_MODEL_ID),
+    "voxtral-mini-3b": (VoxtralModel, config.VOXTRAL_MINI_MODEL_ID),
+    "qwen2-audio-7b": (Qwen2AudioModel, config.QWEN2_AUDIO_MODEL_ID),
 }
 
 

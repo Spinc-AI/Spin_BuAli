@@ -100,16 +100,29 @@ class TestItDependsOnACleanClone:
 
 
 class TestOneCellPerRun:
-    def test_run_cells_are_exactly_the_full_matrix(self, notebook):
-        """3 STT x 3 LLM (separate) + 2 LLM (multimodal, no STT stage) = 11.
-        phi-4-multimodal is excluded from both rosters -- see runner.py's
-        comment above TOP3_LLM."""
-        run_cells = [c for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        assert len(run_cells) == 11
+    def test_run_cells_are_exactly_the_multimodal_roster(self, notebook):
+        """One cell per audio-capable LLM, and nothing else.
 
-    def test_the_rosters_come_from_runner_not_a_second_copy(self, notebook):
-        """The drift this pins: build_notebook.py restated all three rosters
-        as literals, with nothing tying them to runner.py -- so a roster edit
+        `separate` is deliberately not in this notebook: on this dataset the
+        STT stage was the entire result (seamless returned unrelated English
+        sentences for a kidney ultrasound), so every LLM behind it scored near
+        WER 1.0 for the STT engine's failure rather than its own. The pipeline
+        is still in pipeline.py and still tested -- it just has no cell here.
+        """
+        import sys
+
+        sys.path.insert(0, str(REPO / "benchmark"))
+        import runner
+
+        run_cells = [source_of(c) for c in code_cells(notebook)
+                     if "runner.run_one(" in source_of(c)]
+        assert len(run_cells) == len(runner.MULTIMODAL_LLM)
+        assert all('"multimodal"' in s for s in run_cells)
+        assert not any('"separate"' in s for s in run_cells)
+
+    def test_the_roster_comes_from_runner_not_a_second_copy(self, notebook):
+        """The drift this pins: build_notebook.py restated the rosters as
+        literals, with nothing tying them to runner.py -- so a roster edit
         there would silently not reach the generated notebook. Every model
         runner names must appear in a run cell, and no run cell may name a
         model runner doesn't."""
@@ -118,21 +131,18 @@ class TestOneCellPerRun:
         sys.path.insert(0, str(REPO / "benchmark"))
         import runner
 
-        run_cells = [source_of(c) for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        named = set()
-        for source in run_cells:
-            for key in set(runner.TOP3_STT) | set(runner.TOP3_LLM) | set(runner.MULTIMODAL_LLM):
-                if f'"{key}"' in source:
-                    named.add(key)
-
-        expected = set(runner.TOP3_STT) | set(runner.TOP3_LLM) | set(runner.MULTIMODAL_LLM)
+        run_cells = [source_of(c) for c in code_cells(notebook)
+                     if "runner.run_one(" in source_of(c)]
+        named = {key for source in run_cells
+                 for key in runner.MULTIMODAL_LLM if f'"{key}"' in source}
+        expected = set(runner.MULTIMODAL_LLM)
         assert named == expected, f"notebook and runner.py disagree: {named ^ expected}"
 
-        # And the counts follow from the rosters, not from a hardcoded number.
-        separate = [s for s in run_cells if '"separate"' in s]
-        multimodal = [s for s in run_cells if '"multimodal"' in s]
-        assert len(separate) == len(runner.TOP3_STT) * len(runner.TOP3_LLM)
-        assert len(multimodal) == len(runner.MULTIMODAL_LLM)
+        # No STT engine may appear either -- a leftover `separate` cell would
+        # name one, and would otherwise pass every other check here.
+        for stt_key in runner.TOP3_STT:
+            assert not any(f'"{stt_key}"' in s for s in run_cells), (
+                f"{stt_key} still appears in a run cell; this notebook is multimodal only")
 
     def test_no_cell_loops_over_multiple_runs(self, notebook):
         """The whole point: a `for` loop calling run_one several times would
@@ -157,13 +167,16 @@ class TestOneCellPerRun:
             labels.append(match.group(1))
         assert len(labels) == len(set(labels)), labels
 
-    def test_nine_separate_and_two_multimodal(self, notebook):
-        run_cells = [source_of(c) for c in code_cells(notebook) if "runner.run_one(" in source_of(c)]
-        separate = [s for s in run_cells if '"separate"' in s]
+    def test_every_run_cell_passes_no_stt_engine(self, notebook):
+        """The check that makes "multimodal is one step" true in the notebook
+        and not just in the docstrings: `run_one`'s STT stage is gated on its
+        first positional argument, so a cell that passed an engine there would
+        transcribe first and feed the text in -- a different experiment under
+        the same name."""
+        run_cells = [source_of(c) for c in code_cells(notebook)
+                     if "runner.run_one(" in source_of(c)]
         multimodal = [s for s in run_cells if '"multimodal"' in s]
-        assert len(separate) == 9
-        assert len(multimodal) == 2
-        # multimodal runs pass no STT engine -- the first positional arg is None.
+        assert multimodal and len(multimodal) == len(run_cells)
         for source in multimodal:
             start = source.index("runner.run_one(") + len("runner.run_one(")
             first_arg = source[start:source.index(",", start)].strip()
@@ -217,10 +230,14 @@ class TestItIsActuallyConnected:
                 namespace["RESULTS_DIR"] = tmp_path / "results"
 
         results_dir = pathlib.Path(str(namespace["RESULTS_DIR"]))
+        sys.path.insert(0, str(REPO / "benchmark"))
+        import runner
+
+        expected_runs = len(runner.MULTIMODAL_LLM)
         per_run_csvs = sorted(results_dir.glob("results__*.csv"))
-        assert len(per_run_csvs) == 11, "9 separate + 2 multimodal runs"
+        assert len(per_run_csvs) == expected_runs, "one CSV per multimodal run"
         assert (results_dir / "results_master.csv").is_file()
-        assert namespace["master"] is not None and len(namespace["master"]) == 11
+        assert namespace["master"] is not None and len(namespace["master"]) == expected_runs
 
     def test_the_dataset_is_found_at_three_levels_of_nesting(self, notebook, tmp_path, monkeypatch):
         """The layout a zipped Kaggle Dataset actually produces: an extra

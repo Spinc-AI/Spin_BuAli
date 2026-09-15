@@ -27,6 +27,11 @@ GEMMA_12B_MODEL_ID = os.getenv("GEMMA_12B_MODEL_ID", "google/gemma-4-12B-it")
 QWEN_OMNI_MODEL_ID = os.getenv("QWEN_OMNI_MODEL_ID", "Qwen/Qwen3-Omni-30B-A3B-Instruct")
 MEDGEMMA_4B_MODEL_ID = os.getenv("MEDGEMMA_4B_MODEL_ID", "google/medgemma-1.5-4b-it")
 PHI4_MULTIMODAL_MODEL_ID = os.getenv("PHI4_MULTIMODAL_MODEL_ID", "microsoft/Phi-4-multimodal-instruct")
+# Audio-in chat models from outside the Gemma/Qwen-Omni families. Both load
+# through a first-class transformers architecture (no trust_remote_code), which
+# is why they are here and Phi-4-multimodal's custom code remains a problem.
+VOXTRAL_MINI_MODEL_ID = os.getenv("VOXTRAL_MINI_MODEL_ID", "mistralai/Voxtral-Mini-3B-2507")
+QWEN2_AUDIO_MODEL_ID = os.getenv("QWEN2_AUDIO_MODEL_ID", "Qwen/Qwen2-Audio-7B-Instruct")
 
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "aya-expanse-8b")
 MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "2048"))
@@ -37,3 +42,12 @@ MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "2048"))
 # NVIDIA GB10 reports its full ~130GB pool, yet "auto" still offloaded part of
 # a 24GB model to CPU). Use "auto" only when a model genuinely doesn't fit.
 DEVICE_MAP = os.getenv("DEVICE_MAP", "cuda")
+
+# Weight compression for every from_pretrained() call: None (native fp16/bf16),
+# "int8", or "nf4" (bitsandbytes' 4-bit normal-float). None is right for the
+# service -- it serves one model on hardware chosen to hold it -- but the
+# benchmark's tier system places some models at a quantized precision to fit a
+# 16 GB card at all, and needs a way to say so. Without this knob that request
+# was silently ignored: the model loaded at full precision, OOMed, and still
+# stamped its results "int8", which is a wrong row rather than a failed one.
+QUANTIZATION = os.getenv("QUANTIZATION") or None

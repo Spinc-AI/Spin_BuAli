@@ -60,14 +60,13 @@ class TestTop3:
         is what would have caught it."""
         assert len(runner.TOP3_LLM) == 3
         assert len(set(runner.TOP3_LLM)) == 3
-        # Two, not three: phi-4-multimodal was the third-lightest
-        # audio-capable model, and is excluded -- confirmed unloadable on
-        # this environment across five rounds of real fixes, ending on a
+        assert len(set(runner.MULTIMODAL_LLM)) == len(runner.MULTIMODAL_LLM)
+        # phi-4-multimodal would sit second in MULTIMODAL_LLM by weight and is
+        # excluded from both rosters -- confirmed unloadable on this
+        # environment across five rounds of real fixes, ending on a
         # meta-tensor incompatibility in its own vendor code that no
         # from_pretrained() kwarg can work around. See runner.py's comment
         # above TOP3_LLM for the full history.
-        assert len(runner.MULTIMODAL_LLM) == 2
-        assert len(set(runner.MULTIMODAL_LLM)) == 2
         assert "phi-4-multimodal" not in runner.TOP3_LLM
         assert "phi-4-multimodal" not in runner.MULTIMODAL_LLM
         for key in runner.TOP3_LLM + runner.MULTIMODAL_LLM:
@@ -87,10 +86,19 @@ class TestTop3:
         import settings
 
         registry = (settings.REPO_ROOT / "core_llm" / "model.py").read_text(encoding="utf-8")
-        # Audio-capable classes only, per core_llm/model.py's own module
-        # docstring -- TextOnlyModel and MedGemmaTextModel are deliberately
-        # excluded.
-        audio_capable = {"GemmaAudioModel", "QwenOmniModel", "Phi4MultimodalModel"}
+        # Read off each class's own `supports_audio`, rather than listing the
+        # audio-capable class names here. A hardcoded list is a second copy of
+        # a fact core_llm already states, and it goes stale the moment a model
+        # is added -- which is exactly what this test is meant to catch about
+        # the roster, so it should not be the failure mode of the test itself.
+        audio_capable = {
+            name for name, body in re.findall(
+                r"^class (\w+)\(BaseLLM\):\n(.*?)(?=^class |\Z)",
+                registry, re.MULTILINE | re.DOTALL)
+            if re.search(r"^\s+supports_audio = True$", body, re.MULTILINE)
+        }
+        assert "GemmaAudioModel" in audio_capable      # the parse works...
+        assert "TextOnlyModel" not in audio_capable    # ...and discriminates
         for key in runner.MULTIMODAL_LLM:
             match = re.search(rf'"{re.escape(key)}":\s*\((\w+),', registry)
             assert match, f"{key} not found in core_llm/model.py's MODEL_REGISTRY"

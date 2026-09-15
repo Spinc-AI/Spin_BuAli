@@ -194,9 +194,10 @@ class CoreLLMAdapter:
     is holding.
 
     Audio and text handling both live in `core_llm/model.py`, not duplicated
-    here -- see `bridge.py`'s module docstring for why. The one trade-off
-    left: unlike `LocalLLM`, this never quantizes (`core_llm/` doesn't).
-    `max_new_tokens` *is* honoured -- see `generate()` for how.
+    here -- see `bridge.py`'s module docstring for why. Both `precision` and
+    `max_new_tokens` are honoured, each by setting the knob core_llm reads off
+    its own config module and putting it back afterwards -- see `load()` and
+    `generate()`.
     """
 
     def __init__(self, model_key: str, core_model, precision: str = "fp16",
@@ -211,6 +212,21 @@ class CoreLLMAdapter:
 
     def load(self):
         started = time.perf_counter()
+        core_config = getattr(self._core_model, "_core_llm_config", None)
+        # A quantized placement that cannot be applied must fail, not load at
+        # full precision and stamp the run "int8" anyway. That is exactly what
+        # happened to gemma-4-12b: the tier system placed it at int8, this
+        # adapter ignored `precision` entirely, ~24 GB of fp16 weights went
+        # onto a 14.56 GB T4, and the CSV recorded four OOM/repetition
+        # failures under a precision the run never used -- a wrong row, which
+        # is worse than a missing one.
+        if self.precision in QUANTIZATION and (
+                core_config is None or not hasattr(core_config, "QUANTIZATION")):
+            raise LoadFailed(
+                f"{self.model_key} was placed at {self.precision}, but this "
+                "core_llm build has no QUANTIZATION knob to honour it -- "
+                "loading anyway would report a precision that was never used")
+
         # core_llm's classes hardcode `device_map=config.DEVICE_MAP`, which
         # defaults to the string "cuda" -- a single GPU. That silently threw
         # away the card count the tier system had already worked out: a
@@ -219,17 +235,29 @@ class CoreLLMAdapter:
         # 68% of the way through the weights. "auto" is what lets accelerate
         # shard across both cards, and is what LocalLLM already does for the
         # same condition (`"auto" if self.cards > 1 else 0`).
-        core_config = getattr(self._core_model, "_core_llm_config", None)
         target = "auto" if self.cards > 1 else emptiest_cuda_device()
-        if core_config is not None and target is not None:
-            original_device_map = core_config.DEVICE_MAP
-            core_config.DEVICE_MAP = target
-            try:
-                self._core_model.load()
-            finally:
-                core_config.DEVICE_MAP = original_device_map
-        else:
+        if core_config is None:
             self._core_model.load()
+            self.load_seconds = time.perf_counter() - started
+            return self
+
+        # Both knobs are set the same way and for the same reason: core_llm's
+        # classes read them off their own config module at load time rather
+        # than taking them as arguments (see `generate()` for the identical
+        # dance around MAX_NEW_TOKENS), so honouring the tier system's
+        # placement means setting them there and putting them back.
+        original = {"DEVICE_MAP": core_config.DEVICE_MAP,
+                    "QUANTIZATION": getattr(core_config, "QUANTIZATION", None)}
+        if target is not None:
+            core_config.DEVICE_MAP = target
+        if self.precision in QUANTIZATION:
+            core_config.QUANTIZATION = self.precision
+        try:
+            self._core_model.load()
+        finally:
+            core_config.DEVICE_MAP = original["DEVICE_MAP"]
+            if hasattr(core_config, "QUANTIZATION"):
+                core_config.QUANTIZATION = original["QUANTIZATION"]
         self.load_seconds = time.perf_counter() - started
         return self
 

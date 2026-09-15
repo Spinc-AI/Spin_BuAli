@@ -57,18 +57,34 @@ TOP3_STT = [
 # that pipeline never needs it. Note gemma-4-e4b's real weight is 7.85B
 # despite the "E4B" name -- its "4B" refers to effective compute, not the
 # on-disk parameter count.
+#
+# phi-4-multimodal is deliberately absent, from both this list and
+# MULTIMODAL_LLM below. Its checkpoint remains registered in
+# core_llm/model.py (Phi4MultimodalModel) for whoever eventually resolves
+# this, but it cannot currently load at all: confirmed live across five
+# rounds of real fixes (missing pip deps, a stale SlidingWindowCache import,
+# a from_pretrained kwarg the checkpoint's config class silently ignores, a
+# flash_attn dependency worked around via eager attention) that all
+# succeeded in turn, ending on "RuntimeError: Tensor.item() cannot be
+# called on meta tensors" inside the vendor's own
+# speech_conformer_encoder.py -- its __init__ does real tensor computation,
+# which is incompatible with the meta-device fast-init transformers uses by
+# default, and low_cpu_mem_usage=False (the standard fix for exactly that
+# error) did not change the outcome. That is a structural mismatch between
+# this checkpoint's custom code and the installed transformers version, not
+# something fixable from a caller's from_pretrained() kwargs.
 TOP3_LLM = [
     "medgemma-1.5-4b",  # 4.3B  -> ~8.6 GB
-    "phi-4-multimodal", # 5.6B  -> ~11.2 GB
     "gemma-4-e4b",       # 7.85B -> ~15.7 GB
+    "aya-expanse-8b",    # 8.03B -> ~16.1 GB
 ]
 
-# The three lightest AUDIO-CAPABLE LLMs -- used for the `multimodal`
-# pipeline, where the LLM hears the recording directly and text-only models
-# (medgemma-1.5-4b included) cannot run at all. gemma-4-12b takes
-# medgemma-1.5-4b's place here for exactly that reason.
+# The lightest AUDIO-CAPABLE LLMs -- used for the `multimodal` pipeline,
+# where the LLM hears the recording directly and text-only models
+# (medgemma-1.5-4b, aya-expanse-8b) cannot run at all. Only two, not three:
+# phi-4-multimodal would have been the third-lightest, and is excluded for
+# the reason documented above TOP3_LLM.
 MULTIMODAL_LLM = [
-    "phi-4-multimodal", # 5.6B  -> ~11.2 GB
     "gemma-4-e4b",       # 7.85B -> ~15.7 GB
     "gemma-4-12b",       # 12B   -> ~24 GB
 ]

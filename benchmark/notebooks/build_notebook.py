@@ -103,11 +103,8 @@ print(f"\\nrunning commit {{commit}}")
 
 code("""
 # Everything the benchmark needs beyond what Kaggle ships. bitsandbytes and
-# accelerate are for the quantized (tier B) language models. backoff and peft
-# are required by phi-4-multimodal's own custom modeling code
-# (trust_remote_code=True) -- not a torch/transformers dependency, specific
-# to that one checkpoint's repo, so nothing else here needs them.
-!pip install -q python-dotenv sentencepiece bitsandbytes accelerate backoff peft
+# accelerate are for the quantized (tier B) language models.
+!pip install -q python-dotenv sentencepiece bitsandbytes accelerate
 """)
 
 # ── 3. Imports ───────────────────────────────────────────────────────────
@@ -329,22 +326,30 @@ def placement_for(llm_key):
 
 # ── 7. Runs ──────────────────────────────────────────────────────────────
 md(f"""
-## 7 — Runs: 3 STT engines x 3 LLMs (`separate`), plus 3 LLMs (`multimodal`)
+## 7 — Runs: 3 STT engines x 3 LLMs (`separate`), plus 2 LLMs (`multimodal`)
 
 Two rosters, picked for a reason:
 
 * **`runner.TOP3_STT`** -- the three lowest-WER engines in `docs/STT_Models.pdf`.
 * **`runner.TOP3_LLM`** -- the three *lightest* LLMs by parameter count, used
   for the `separate` pipeline (text only, so audio capability doesn't matter):
-  {", ".join(f"`{k}`" for k in ["medgemma-1.5-4b", "phi-4-multimodal", "gemma-4-e4b"])}.
-* **`runner.MULTIMODAL_LLM`** -- the three lightest **audio-capable** LLMs,
-  used for `multimodal` (the LLM hears the recording directly, so a text-only
-  model like `medgemma-1.5-4b` cannot run here at all --
-  `gemma-4-12b` takes its place):
-  {", ".join(f"`{k}`" for k in ["phi-4-multimodal", "gemma-4-e4b", "gemma-4-12b"])}.
+  {", ".join(f"`{k}`" for k in ["medgemma-1.5-4b", "gemma-4-e4b", "aya-expanse-8b"])}.
+* **`runner.MULTIMODAL_LLM`** -- the lightest **audio-capable** LLMs, used for
+  `multimodal` (the LLM hears the recording directly, so a text-only model
+  cannot run here at all):
+  {", ".join(f"`{k}`" for k in ["gemma-4-e4b", "gemma-4-12b"])}.
 
-3 STT x 3 LLM = 9 `separate` runs, + 3 `multimodal` runs (one per audio-capable
-LLM, no STT stage) = **12 runs, 12 cells**.
+**`phi-4-multimodal` is deliberately absent from both.** It cannot currently
+load on this environment -- confirmed across five rounds of real fixes
+(missing pip deps, a stale import, a `from_pretrained` kwarg its own config
+class ignores, a `flash_attn` dependency worked around via eager attention),
+ending on a meta-tensor incompatibility inside its own vendor code that no
+caller-side fix resolves. Its checkpoint stays registered in
+`core_llm/model.py` for whoever eventually resolves this; see `runner.py`'s
+comment above `TOP3_LLM` for the full history.
+
+3 STT x 3 LLM = 9 `separate` runs, + 2 `multimodal` runs (one per
+audio-capable LLM, no STT stage) = **11 runs, 11 cells**.
 
 **To add a run:** copy a cell and change its `stt_key`/`llm_key`/`pipeline`/
 `label`. Every cell is independent -- stopping the session after any of them
@@ -366,14 +371,14 @@ _stt_comment = {
 }
 _llm_comment = {
     "medgemma-1.5-4b": "google/medgemma-1.5-4b-it -- 4.3B, text only",
-    "phi-4-multimodal": "microsoft/Phi-4-multimodal-instruct -- 5.6B, audio-capable",
     "gemma-4-e4b": "google/gemma-4-E4B-it -- 7.85B, audio-capable",
+    "aya-expanse-8b": "CohereLabs/aya-expanse-8b -- 8.03B, text only",
     "gemma-4-12b": "google/gemma-4-12B-it -- 12B, audio-capable",
 }
 
 _top3_stt = ["seamless", "seamless-medium", "whisper"]
-_top3_llm = ["medgemma-1.5-4b", "phi-4-multimodal", "gemma-4-e4b"]
-_multimodal_llm = ["phi-4-multimodal", "gemma-4-e4b", "gemma-4-12b"]
+_top3_llm = ["medgemma-1.5-4b", "gemma-4-e4b", "aya-expanse-8b"]
+_multimodal_llm = ["gemma-4-e4b", "gemma-4-12b"]
 
 _index = 0
 for stt_key in _top3_stt:

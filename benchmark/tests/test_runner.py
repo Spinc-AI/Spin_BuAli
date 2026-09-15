@@ -52,17 +52,26 @@ class TestTop3:
     def test_the_keys_match_the_pdf_s_rank_order(self):
         assert runner.TOP3_STT == ["seamless", "seamless-medium", "whisper"]
 
-    def test_top3_llm_and_multimodal_llm_are_exactly_three_real_registry_keys(self):
+    def test_top3_llm_and_multimodal_llm_are_real_registry_keys(self):
         """Same bug class as TOP3_STT, on the LLM side: a key that isn't
         actually in core_llm/model.py's MODEL_REGISTRY resolves to a
         LoadFailed at load time, not at notebook-build time. Resolving each
         key for real (against the live core_llm/config.py + model.py source)
         is what would have caught it."""
-        for keys in (runner.TOP3_LLM, runner.MULTIMODAL_LLM):
-            assert len(keys) == 3
-            assert len(set(keys)) == 3
-            for key in keys:
-                assert llm_module._hugging_face_id(key)  # raises LoadFailed if unknown
+        assert len(runner.TOP3_LLM) == 3
+        assert len(set(runner.TOP3_LLM)) == 3
+        # Two, not three: phi-4-multimodal was the third-lightest
+        # audio-capable model, and is excluded -- confirmed unloadable on
+        # this environment across five rounds of real fixes, ending on a
+        # meta-tensor incompatibility in its own vendor code that no
+        # from_pretrained() kwarg can work around. See runner.py's comment
+        # above TOP3_LLM for the full history.
+        assert len(runner.MULTIMODAL_LLM) == 2
+        assert len(set(runner.MULTIMODAL_LLM)) == 2
+        assert "phi-4-multimodal" not in runner.TOP3_LLM
+        assert "phi-4-multimodal" not in runner.MULTIMODAL_LLM
+        for key in runner.TOP3_LLM + runner.MULTIMODAL_LLM:
+            assert llm_module._hugging_face_id(key)  # raises LoadFailed if unknown
 
     def test_multimodal_llm_are_all_audio_capable(self):
         """The whole reason MULTIMODAL_LLM exists as a separate list from

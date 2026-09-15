@@ -80,7 +80,7 @@ T4 ×2** and **Internet → On**, then run the cells in order:
 4. **Config** — windowing, the report-structure addendum, and the token cap,
    in one place. The STT and LLM rosters are fixed (see below) rather than a
    variable to edit here.
-5. **Runs** — 12 fixed cells: 3 STT x 3 LLM (`separate`) + 3 LLM
+5. **Runs** — 11 fixed cells: 3 STT x 3 LLM (`separate`) + 2 LLM
    (`multimodal`, no STT stage). Copy a cell to add another combination.
 6. **Master** — merges every `results__*.csv` present into one sorted table.
    Safe to run after any subset of the run cells.
@@ -108,18 +108,28 @@ matter):
 | Key | Params | Audio? |
 |---|---|---|
 | `medgemma-1.5-4b` | 4.3B | No |
-| `phi-4-multimodal` | 5.6B | Yes |
 | `gemma-4-e4b` | 7.85B (despite the "E4B" name) | Yes |
+| `aya-expanse-8b` | 8.03B | No |
 
-`runner.MULTIMODAL_LLM` — the three lightest **audio-capable** LLMs, for
+`runner.MULTIMODAL_LLM` — the lightest **audio-capable** LLMs, for
 `multimodal` (the LLM hears the recording directly, so a text-only model
-can't run here at all — `gemma-4-12b` takes `medgemma-1.5-4b`'s place):
+can't run here at all):
 
 | Key | Params |
 |---|---|
-| `phi-4-multimodal` | 5.6B |
 | `gemma-4-e4b` | 7.85B |
 | `gemma-4-12b` | 12B |
+
+**`phi-4-multimodal` is deliberately excluded from both rosters.** It cannot
+currently load on this environment — confirmed across five rounds of real
+fixes (missing pip deps, a stale `SlidingWindowCache` import, a
+`from_pretrained` kwarg its own config class silently ignores, a `flash_attn`
+dependency worked around via eager attention), ending on a meta-tensor
+incompatibility inside its own vendor code (`Tensor.item() cannot be called
+on meta tensors`) that no caller-side fix resolves. Its checkpoint stays
+registered in `core_llm/model.py` (`Phi4MultimodalModel`) for whoever
+eventually resolves this — see `runner.py`'s comment above `TOP3_LLM` for
+the full history.
 
 **Audio-capable models load through `core_llm/model.py`'s own classes, not a
 duplicate loader.** `llm.build()` routes any key in `plan.AUDIO_CAPABLE` to

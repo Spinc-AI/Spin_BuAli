@@ -115,14 +115,16 @@ code("""
 # is the opposite of downgrading, which is why phi-4-multimodal's fix
 # earlier avoided touching this version at all and this one does not.
 #
-# "numpy<2": confirmed live -- without this pin, the transformers upgrade
-# above drags numpy up to 2.x, which breaks Kaggle's preinstalled torch
-# wheel (built against numpy 1.x's ABI) with
-# "ImportError: cannot import name 'nn' from partially initialized module
-# 'torch' (most likely due to a circular import)" -- torch's own import
-# sequence is not actually circular, it just cannot complete against a
-# mismatched numpy. Pinning here keeps pip's resolver from touching it.
-!pip install -q --upgrade transformers "numpy<2" python-dotenv sentencepiece bitsandbytes accelerate
+# numpy stays unpinned, explicitly upgraded, not held down. A "numpy<2" pin
+# was tried here and reverted -- confirmed live to break pandas instead
+# ("numpy.dtype size changed... binary incompatibility"). This Kaggle
+# image's own preinstalled packages (pandas at least, likely torch too)
+# are built against numpy 2.x, not 1.x -- the opposite of the older
+# "Kaggle needs numpy<2" advice this pin was based on. If transformers'
+# own upgrade left numpy on an older 2.x patch that conflicts with
+# something else, an explicit --upgrade numpy (no version ceiling) pulls
+# it back to whatever this image's other packages actually expect.
+!pip install -q --upgrade transformers numpy python-dotenv sentencepiece bitsandbytes accelerate
 """)
 
 # ── 3. Imports ───────────────────────────────────────────────────────────

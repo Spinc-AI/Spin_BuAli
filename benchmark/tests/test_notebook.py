@@ -27,8 +27,10 @@ NOTEBOOK = REPO / "benchmark" / "notebooks" / "kaggle_dual_t4.ipynb"
 BUILDER = REPO / "benchmark" / "notebooks" / "build_notebook.py"
 
 # Cells the harness cannot run standalone: a real git clone, a real pip
-# install, and Hugging Face auth against the live API.
-NOT_RUNNABLE_OFFLINE = ("subprocess.run", "pip install", "resolve_hf_token", "check_access(")
+# install, Hugging Face auth against the live API, and the version check
+# (it imports torch, which this suite deliberately runs without).
+NOT_RUNNABLE_OFFLINE = ("subprocess.run", "pip install", "resolve_hf_token", "check_access(",
+                        "import numpy, torch, transformers")
 
 
 def code_cells(notebook):

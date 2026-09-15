@@ -112,30 +112,48 @@ print(f"\\nrunning commit {{commit}}")
 ''')
 
 code("""
-# Everything the benchmark needs beyond what Kaggle ships. bitsandbytes and
-# accelerate are for the quantized (tier B) language models.
+# transformers >= 5.5.0 is REQUIRED, not opportunistic. gemma-4-* is
+# model_type "gemma4", which only exists from 5.5.0 (added 2026-04-02);
+# on Kaggle's preinstalled 4.x, AutoConfig.from_pretrained() raises a bare
+# KeyError('gemma4') before reaching any model code. core_llm/ is already
+# written against v5's API anyway -- `dtype=` (v4 called it `torch_dtype`)
+# and AutoModelForMultimodalLM -- so this aligns the runtime with the code.
+# v5 also drops TensorFlow/JAX entirely, removing a whole class of
+# numpy-related import crashes.
 #
-# --upgrade transformers: Kaggle's preinstalled version does not recognise
-# the "gemma4" architecture at all -- AutoConfig.from_pretrained() fails on
-# gemma-4-e4b/12b with a bare KeyError before ever reaching model code,
-# confirmed live. Upgrading (not pinning down) is deliberate: MedGemma
-# (Gemma 3-based) and the seamless STT model already load fine on the
-# current version, and newer transformers releases keep support for
-# established architectures while adding new ones -- the risk profile here
-# is the opposite of downgrading, which is why phi-4-multimodal's fix
-# earlier avoided touching this version at all and this one does not.
-#
-# numpy is deliberately NOT named here -- not pinned, not upgraded. Two
-# attempts to manage it both did damage and were reverted: "numpy<2" broke
-# pandas outright ("numpy.dtype size changed... binary incompatibility"),
-# because this image's preinstalled packages are built against numpy 2.x,
-# not 1.x; and the --upgrade meant to undo that left numpy's Python files
-# and its compiled extension on different versions ("cannot import name
-# '_center' from numpy._core.umath"), which no restart repairs because the
-# damage is on disk. The image ships a numpy its own torch/pandas were
-# compiled against. Leave it alone.
-!pip install -q --upgrade transformers python-dotenv sentencepiece bitsandbytes accelerate
+# --no-deps on the HF stack is the important part. A plain
+# `pip install --upgrade transformers` pulls numpy up with it, and numpy
+# >= 2.1 changed numpy._core.umath's internals, which breaks the torch
+# wheel this image was built against -- first as "cannot import name 'nn'
+# from partially initialized module 'torch'", then, after trying to repair
+# it, as "cannot import name '_center' from numpy._core.umath". Both were
+# hit live. Installing the HF packages without their dependency closure
+# leaves numpy and torch exactly as the image shipped them, which is the
+# only state they are known to work in. tokenizers/huggingface-hub/
+# safetensors come along because v5 needs newer ones than 4.x shipped.
+!pip install -q --no-deps --upgrade "transformers>=5.5.0" tokenizers huggingface-hub safetensors
+!pip install -q python-dotenv sentencepiece bitsandbytes accelerate
 """)
+
+code('''
+# Fail here, loudly, rather than twenty minutes into a run. Every version
+# problem this notebook has hit would have been one line of output instead
+# of a stack trace in a model loader.
+import numpy, torch, transformers
+
+print(f"transformers {transformers.__version__}")
+print(f"torch        {torch.__version__}")
+print(f"numpy        {numpy.__version__}")
+
+_major = int(transformers.__version__.split(".")[0])
+_minor = int(transformers.__version__.split(".")[1])
+if (_major, _minor) < (5, 5):
+    raise SystemExit(
+        f"transformers {transformers.__version__} cannot load gemma-4-* "
+        "(model_type 'gemma4' needs >= 5.5.0). The install cell above did "
+        "not take -- restart the kernel and run it again before continuing.")
+print("\\nversions OK")
+''')
 
 # ── 3. Imports ───────────────────────────────────────────────────────────
 md("""

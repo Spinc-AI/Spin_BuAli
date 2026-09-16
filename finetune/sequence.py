@@ -3,7 +3,7 @@
 This is the part of a causal-LM speech collator that is actually worth a unit
 test, and the only part of one that can be tested without a GPU, a real
 tokenizer, or `torch` installed: everything here is opaque integer token IDs
-in plain Python lists. `finetune/voxtral/collator.py` is a thin wrapper that
+in plain Python lists. `finetune/gemma/collator.py` is a thin wrapper that
 calls the real processor for the prompt half and the real tokenizer for the
 target half, then hands both to `build_batch` below -- so a mistake in the
 masking or padding arithmetic (the actual failure mode that makes a model
@@ -11,10 +11,13 @@ train to reproduce its own prompt, or silently drop the wrong tokens from the
 loss) shows up here, not three hours into a Kaggle session.
 
 The shape is the LLaMA-style prompt masking every reference implementation
-found while researching this pipeline uses --
+found while researching this pipeline uses -- both
 `Deep-unlearning/Finetune-Voxtral-ASR`'s `VoxtralDataCollator` and the PEFT
-project's own `DataCollatorSpeechSeq2SeqWithPadding` example both mask the
-prompt with -100 and train only on the target.
+project's own `DataCollatorSpeechSeq2SeqWithPadding` example mask the prompt
+with -100 and train only on the target (see `finetune/README.md`'s Research
+section for why those two, not Gemma-specific ones, were the templates this
+module's shape was drawn from -- no Gemma-specific reference implementation
+with this level of detail was found).
 """
 
 

@@ -1,16 +1,13 @@
-# Shared
 torch
 transformers>=5.5.0
 datasets
-soundfile
 jiwer
 python-dotenv
 accelerate
-
-# voxtral/
 peft
-mistral-common[audio]
+bitsandbytes
 sentencepiece
 
-# whisper/
-bitsandbytes
+# tests/ only (conftest.py's fixture writes real .wav files for
+# benchmark/dataset.py's own loader to read)
+soundfile

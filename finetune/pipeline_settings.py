@@ -21,8 +21,6 @@ load_dotenv(pathlib.Path(__file__).parent / ".env")
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BENCHMARK_DIR = pathlib.Path(os.getenv("BENCHMARK_DIR", str(REPO_ROOT / "benchmark")))
 
-TARGET_SAMPLE_RATE = 16000
-
 # Held out for eval, not trained on. A fraction of the WHOLE dataset -- with
 # nine labelled clips today that rounds to roughly one, which is the point:
 # see data.train_eval_split for why a fraction alone is not enough once the

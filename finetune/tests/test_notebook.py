@@ -54,16 +54,16 @@ class TestItClonesTheRightBranch:
 
 
 class TestItCallsBothScriptsAsSubprocesses:
-    """Not imported -- called as `python -m voxtral.train_lora` -- so the
+    """Not imported -- called as `python -m gemma.train_lora` -- so the
     scripts' own `argparse` interface is the only contract, and the notebook
     cannot drift out of sync with an internal function signature the way an
     `import`-based notebook could.
     """
 
-    def test_both_train_lora_modules_are_invoked(self, notebook):
+    def test_both_gemma_scripts_are_invoked(self, notebook):
         source = "".join(source_of(c) for c in code_cells(notebook))
-        assert "voxtral.train_lora" in source
-        assert "whisper.train_lora" in source
+        assert "gemma.train_lora" in source
+        assert "gemma.evaluate" in source
 
     def test_dry_run_is_exercised_before_a_real_training_cell(self, notebook):
         sources = [source_of(c) for c in code_cells(notebook)]

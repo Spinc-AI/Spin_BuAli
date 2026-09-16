@@ -74,22 +74,21 @@ def train_eval_split(items, eval_fraction=0.15, min_eval=1, seed=13):
 
 
 def to_hf_dataset(items):
-    """A `datasets.Dataset` with an `audio` column (decoded, 16 kHz) and a
-    `text` column (the reference report) -- the two fields every collator in
-    this folder expects, and the same shape
-    `Deep-unlearning/Finetune-Voxtral-ASR` and the HF Whisper PEFT example
-    both use, so this one dataset feeds either training script unchanged.
+    """A `datasets.Dataset` with `asset_id`, `audio_path` and `text` columns.
 
-    Import is local: `datasets` (and the `soundfile`-backed `Audio` feature
-    it wraps) is only needed here, not by the split logic above, which
-    `finetune/tests/test_data.py` runs without it installed.
+    `audio_path` is a plain string, not a decoded `datasets.Audio` column on
+    purpose: `gemma/collator.py` hands it straight to
+    `processor.apply_chat_template` as `{"type": "audio", "url": ...}`,
+    exactly the way `core_llm/model.py`'s `GemmaAudioModel` does at
+    inference -- Gemma's own processor loads and resamples the file itself.
+    Decoding it again here would be redundant work with its own chance to
+    disagree with the processor's own resampling.
+
+    Import is local: `datasets` is only needed here, not by the split logic
+    above, which `finetune/tests/test_data.py` runs without it installed.
     """
-    from datasets import Audio, Dataset
+    from datasets import Dataset
 
-    import pipeline_settings
-
-    rows = [{"asset_id": item.asset_id, "audio": str(item.audio), "text": item.reference}
+    rows = [{"asset_id": item.asset_id, "audio_path": str(item.audio), "text": item.reference}
             for item in items]
-    hf_dataset = Dataset.from_list(rows)
-    return hf_dataset.cast_column(
-        "audio", Audio(sampling_rate=pipeline_settings.TARGET_SAMPLE_RATE))
+    return Dataset.from_list(rows)

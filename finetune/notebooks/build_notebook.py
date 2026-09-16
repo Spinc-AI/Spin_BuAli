@@ -32,34 +32,32 @@ def code(text):
 
 # ══════════════════════════════════════════════════════════════════════════
 md(f"""
-# Spin BuAli — domain fine-tuning
+# Spin BuAli — Gemma 4 domain fine-tuning
 
-Adapts an audio model to this project's own dictations (English-dominant,
-Persian words mixed in, radiology vocabulary) rather than measuring a stock
-checkpoint, which is what `benchmark/` does instead.
-
-**Two independent recipes, either one runnable on its own:**
-
-* **`whisper/`** — LoRA fine-tune of `nezamisafa/whisper-persian-v4`, the
-  checkpoint already in production (`stt/app/config.py`'s `"whisper"` key).
-  The most-reproduced recipe here: PEFT's own official Whisper LoRA example,
-  plus a closely analogous published result (MediBeng-Whisper-Tiny, WER
-  107.7 → ~29.5 fine-tuning Whisper on code-switched clinical speech).
-* **`voxtral/`** — LoRA fine-tune of `mistral-common`'s Voxtral-Mini-3B, the
-  lightest model in the benchmark's own `multimodal` roster. Recipe sourced
-  from `Deep-unlearning/Finetune-Voxtral-ASR` (the collator shape) and Trelis
-  Research's published Voxtral Mini hyperparameters.
-
-Full citations, the honest gaps (no public Persian-English clinical dataset
-exists to validate against, so the numbers below are THIS project's own, not
-a reproduction of someone else's), and what "proven to work" does and does
-not mean here are in `finetune/README.md` — read it before trusting a number
-out of this notebook.
+LoRA fine-tunes Gemma 4 (the encoder-free, audio-capable "Unified" variant --
+`gemma-4-e4b`/`gemma-4-12b` in the benchmark's own multimodal roster) on this
+project's own dictations, trained against the **exact prompt shape
+production uses**: `core_llm/model.py`'s `GemmaAudioModel` chat template
+(system + user-with-audio + assistant), not a separate transcription-only
+API. That is the whole reason Gemma was chosen over the other audio-capable
+models in the roster for this — see `finetune/README.md`'s Research section
+for the full citation trail and the one published precedent this recipe is
+built from.
 
 **Before running:** Settings → Accelerator **GPU T4 ×2**, Internet **On**.
 This notebook does not need the `spin-buali-dataset` Kaggle Dataset attached
 if you instead attach a public smoke-test dataset first (recommended on a
-first run -- see cell 5).
+first run — see cell 5).
+
+**What "proven to work" does and does not mean here** — this pipeline has
+never executed a real training loop; the environment it was written in has
+no GPU and no `torch` installed at all. Every non-GPU-dependent piece is
+genuinely tested (`finetune/tests/`), and both scripts were run for real
+against a fixture dataset, reaching exactly the point where `torch`/
+`transformers`/`datasets` are needed before failing. Cell 6 below
+(`--dry-run`) is what closes that gap on real hardware, in minutes, before
+any training cell runs. Read `finetune/README.md` before trusting a number
+out of this notebook.
 """)
 
 # ── 1. Hardware ──────────────────────────────────────────────────────────
@@ -102,13 +100,13 @@ md("""
 Same `transformers>=5.5.0`, `--no-deps` reasoning as the benchmark notebook
 (see its own cell 2 for why) -- this repo pins that version for a reason
 unrelated to fine-tuning specifically, and the two notebooks should not
-silently diverge on it. `datasets`, `peft`, `bitsandbytes`, `jiwer` and
-`mistral-common[audio]` are this notebook's own additions.
+silently diverge on it. `datasets`, `peft`, `bitsandbytes` and `jiwer` are
+this notebook's own additions.
 """)
 code("""
 !pip install -q --no-deps --upgrade "transformers>=5.5.0" tokenizers huggingface-hub safetensors
 !pip install -q python-dotenv sentencepiece bitsandbytes accelerate
-!pip install -q datasets peft jiwer "mistral-common[audio]"
+!pip install -q datasets peft jiwer
 """)
 code('''
 import numpy, torch, transformers
@@ -129,9 +127,8 @@ print("\\nversions OK")
 md("""
 ## 4 — Hugging Face authentication
 
-Both Voxtral and Whisper here are gated or semi-gated checkpoints on some
-accounts. Typed live, not written into this notebook -- same reasoning as
-the benchmark notebook's own cell 4.
+Gemma 4 is a gated checkpoint. Typed live, not written into this notebook --
+same reasoning as the benchmark notebook's own cell 4.
 """)
 code('''
 import getpass
@@ -161,7 +158,7 @@ if _token:
     os.environ["HF_TOKEN"] = os.environ["HUGGINGFACE_HUB_TOKEN"] = _token
     print(f"signed in as {whoami().get('name', 'unknown')}   (token from {_source})")
 else:
-    print("No token given. Some checkpoints below may fail to download.")
+    print("No token given. Gemma 4 will fail to download without one.")
 ''')
 
 # ── 5. Dataset ───────────────────────────────────────────────────────────
@@ -169,12 +166,11 @@ md("""
 ## 5 — Dataset
 
 **Recommended for a first run: a public smoke-test dataset, not the private
-`spin-buali-dataset`.** This pipeline has never been run end-to-end against
-a live GPU -- see `finetune/README.md`'s "What 'proven' does and does not
-mean here" section. Proving the *code* works (data loads, a batch collates,
-loss goes down, WER moves) against a public dataset first is a five-minute
-check; discovering a wiring bug three epochs into the real, small, private
-dataset is not.
+`spin-buali-dataset`.** Only nine labelled clips exist there today — nowhere
+near enough to expect a real fine-tune to generalize from. Proving the
+*code* works (data loads, a batch collates, loss goes down) against a public
+dataset first is a five-minute check; discovering a wiring bug three epochs
+into the real, small, private dataset is not.
 
 `LABELS_CSV` below should point at a `labels.csv` in the shape
 `benchmark/dataset.py`'s `from_csv` expects (`asset_id,audio,report` columns,
@@ -199,19 +195,14 @@ md("""
 ## 6 — Dry run: prove the pipeline before spending GPU-hours on it
 
 Loads data, builds one real batch, runs one forward+backward step, and
-exits. Both scripts have this flag for the same reason `runner.run_one`'s
-`_release_leaked_vram()` exists in the benchmark: a mistake should cost
-seconds, not an interrupted training run partway through.
+exits. Same reason `runner.run_one`'s `_release_leaked_vram()` exists in the
+benchmark: a mistake should cost seconds, not an interrupted training run
+partway through.
 """)
 code("""
 import subprocess
 
-subprocess.run(["python", "-m", "voxtral.train_lora",
-                "--labels-csv", LABELS_CSV, "--dry-run"],
-               cwd=str(FINETUNE_DIR), check=True)
-""")
-code("""
-subprocess.run(["python", "-m", "whisper.train_lora",
+subprocess.run(["python", "-m", "gemma.train_lora",
                 "--labels-csv", LABELS_CSV, "--dry-run"],
                cwd=str(FINETUNE_DIR), check=True)
 """)
@@ -220,21 +211,16 @@ subprocess.run(["python", "-m", "whisper.train_lora",
 md("""
 ## 7 — Train
 
-Each cell is independent and writes its own output directory -- run one,
-both, or neither. Every flag defaults to the recipe documented in the
-script's own module docstring and `finetune/README.md`; override anything
-here by adding `--flag value` to the list below.
+Every flag defaults to the recipe documented in `gemma/train_lora.py`'s own
+module docstring and `finetune/README.md`; override anything here by adding
+`--flag value` to the list below. `--per-device-batch-size` stays at its
+default of 1 unless you have verified `GemmaChatCollator`'s audio-feature
+batching works above that -- see its own docstring.
 """)
 code("""
-subprocess.run(["python", "-m", "voxtral.train_lora",
+subprocess.run(["python", "-m", "gemma.train_lora",
                 "--labels-csv", LABELS_CSV,
-                "--output-dir", "/kaggle/working/voxtral-buali-lora"],
-               cwd=str(FINETUNE_DIR), check=True)
-""")
-code("""
-subprocess.run(["python", "-m", "whisper.train_lora",
-                "--labels-csv", LABELS_CSV,
-                "--output-dir", "/kaggle/working/whisper-buali-lora"],
+                "--output-dir", "/kaggle/working/gemma-buali-lora"],
                cwd=str(FINETUNE_DIR), check=True)
 """)
 
@@ -242,17 +228,17 @@ subprocess.run(["python", "-m", "whisper.train_lora",
 md("""
 ## 8 — Baseline vs fine-tuned WER
 
-Voxtral only has a standalone `evaluate.py` -- Whisper's own WER is already
-printed by its training cell's final `trainer.evaluate()` (see cell 7),
-since `Seq2SeqTrainer` computes it as part of training there.
+`final_text` (parsed out of the model's own JSON reply) against the
+reference report, base checkpoint first, then with the trained adapter
+merged in.
 """)
 code("""
-subprocess.run(["python", "-m", "voxtral.evaluate", "--labels-csv", LABELS_CSV],
+subprocess.run(["python", "-m", "gemma.evaluate", "--labels-csv", LABELS_CSV],
                cwd=str(FINETUNE_DIR), check=True)
 """)
 code("""
-subprocess.run(["python", "-m", "voxtral.evaluate", "--labels-csv", LABELS_CSV,
-                "--adapter-dir", "/kaggle/working/voxtral-buali-lora"],
+subprocess.run(["python", "-m", "gemma.evaluate", "--labels-csv", LABELS_CSV,
+                "--adapter-dir", "/kaggle/working/gemma-buali-lora"],
                cwd=str(FINETUNE_DIR), check=True)
 """)
 
@@ -262,26 +248,13 @@ md("""
 
 WER alone does not say whether the report-level metrics the benchmark
 actually cares about (medical term F1, negation/laterality error rate) moved
-too. To find out, point the benchmark's own model registry at the saved
-checkpoint and run it through `benchmark/notebooks/kaggle_dual_t4.ipynb`
-unchanged:
-
-* **Whisper** — set `WHISPER_MODEL_ID=/kaggle/working/whisper-buali-lora`
-  (or wherever you saved it) before that notebook's cell 3, or register it as
-  a new key in `stt/app/config.py`'s `MODEL_REGISTRY` alongside `"whisper"`.
-* **Voxtral** — merge the LoRA adapter into the base weights first
-  (`PeftModel.merge_and_unload()`, as `voxtral/evaluate.py` already does)
-  and save that; then set `VOXTRAL_MINI_MODEL_ID=<merged checkpoint path>`
-  before that notebook's cell 3 -- `core_llm/config.py` reads that
-  environment variable as `VoxtralModel`'s checkpoint.
-
-This is a real caveat, not a formality: the Voxtral checkpoint above was
-only ever rewarded for verbatim transcription (`apply_transcription_request`
-mode), not for the benchmark's JSON-report chat format
-(`apply_chat_template`). A LoRA adapter's weight deltas apply either way, but
-whether training on one task actually helps the other is exactly what this
-step is for finding out -- not something this notebook or the README
-asserts in advance.
+too. To find out, merge the LoRA adapter into the base weights
+(`PeftModel.merge_and_unload()`, as `gemma/evaluate.py` already does) and
+save that; then set `GEMMA_E4B_MODEL_ID=<merged checkpoint path>` before
+`benchmark/notebooks/kaggle_dual_t4.ipynb`'s cell 3 -- `core_llm/config.py`
+reads that environment variable as `GemmaAudioModel`'s checkpoint for the
+`gemma-4-e4b` key. Run that notebook unchanged after that; nothing else
+about it needs to know a checkpoint was fine-tuned.
 """)
 
 

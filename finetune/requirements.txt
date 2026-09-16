@@ -1,0 +1,16 @@
+# Shared
+torch
+transformers>=5.5.0
+datasets
+soundfile
+jiwer
+python-dotenv
+accelerate
+
+# voxtral/
+peft
+mistral-common[audio]
+sentencepiece
+
+# whisper/
+bitsandbytes

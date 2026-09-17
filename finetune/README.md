@@ -117,19 +117,21 @@ own.
 
 ```
 finetune/
+  run.py                  plain-Python training entry point (proxies gemma/train_lora.py)
+  evaluate.py              plain-Python eval entry point (proxies gemma/evaluate.py)
   pipeline_settings.py   knobs (EVAL_FRACTION, MIN_EVAL_ITEMS, SPLIT_SEED, ...)
   data.py                 Item -> HF datasets.Dataset (asset_id, audio_path, text), train/eval split
   sequence.py              prompt+target token-sequence masking/padding (unit-tested, torch-free)
   gemma/
     collator.py             chat-template prompt (via benchmark/pipeline.py's audio_prompt),
                               JSON target built from the reference report (build_target)
-    train_lora.py            LoRA fine-tune CLI
-    evaluate.py               baseline vs fine-tuned WER on final_text
+    train_lora.py            LoRA fine-tune CLI -- the real logic; run.py just calls its main()
+    evaluate.py               baseline vs fine-tuned WER on final_text -- likewise for evaluate.py
   notebooks/
-    build_notebook.py         generates kaggle_finetune.ipynb
+    build_notebook.py         generates kaggle_finetune.ipynb (Kaggle-only plumbing around run.py/evaluate.py)
   tests/
-    test_sequence.py, test_data.py, test_to_hf_dataset.py,
-    test_gemma_collator.py, test_cli.py, test_notebook.py
+    test_sequence.py, test_data.py, test_to_hf_dataset.py, test_gemma_collator.py,
+    test_cli.py, test_run_entrypoints.py, test_notebook.py
 ```
 
 `pipeline_settings.py` is not called `settings.py` on purpose — see its own
@@ -142,22 +144,35 @@ mistake a repo full of sibling `config.py`/`settings.py` files (see
 
 ## Running it
 
+**Plain Python, no notebook, no Kaggle account.** `run.py` and `evaluate.py`
+at this folder's root are thin proxies to `gemma/train_lora.py`'s and
+`gemma/evaluate.py`'s own `main()` -- see `run.py`'s module docstring for
+why a proxy exists at all. Run from anywhere:
+
 ```bash
 pip install -r finetune/requirements.txt
 
 # Prove the wiring first -- seconds, not epochs:
-python -m gemma.train_lora --labels-csv path/to/labels.csv --dry-run
+python finetune/run.py --labels-csv path/to/labels.csv --dry-run
 
 # Then the real thing:
-python -m gemma.train_lora --labels-csv path/to/labels.csv
+python finetune/run.py --labels-csv path/to/labels.csv
 
 # Baseline vs fine-tuned:
-python -m gemma.evaluate --labels-csv path/to/labels.csv
-python -m gemma.evaluate --labels-csv path/to/labels.csv --adapter-dir ./gemma-buali-lora
+python finetune/evaluate.py --labels-csv path/to/labels.csv
+python finetune/evaluate.py --labels-csv path/to/labels.csv --adapter-dir ./gemma-buali-lora
 ```
 
-Or, on Kaggle: import `finetune/notebooks/kaggle_finetune.ipynb`, same GPU
-T4×2 / Internet On settings as the benchmark notebook.
+`python -m gemma.train_lora ...` / `python -m gemma.evaluate ...` (from
+inside `finetune/`) work identically -- `run.py`/`evaluate.py` call exactly
+those, nothing more.
+
+**On Kaggle instead:** import `finetune/notebooks/kaggle_finetune.ipynb`,
+same GPU T4×2 / Internet On settings as the benchmark notebook. The notebook
+calls these same scripts as a subprocess; it exists for Kaggle-specific
+plumbing (GPU provisioning, the live HF-token prompt, mounting the
+`spin-buali-dataset` Kaggle Dataset) that a local run has no use for, not
+because any training logic lives only there.
 
 `labels.csv` is `benchmark/dataset.py`'s own format —
 `asset_id,audio,report` columns, audio paths relative to the CSV — reused

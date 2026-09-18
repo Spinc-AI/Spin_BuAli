@@ -74,6 +74,35 @@ def emptiest_cuda_device() -> str | None:
     return f"cuda:{max(free_by_index)[1]}"
 
 
+def _max_memory_for_sharding(reserve_gb: float = 1.0) -> dict | None:
+    """An explicit per-GPU memory budget for `device_map="auto"`, keyed by
+    device index plus `"cpu"`, or `None` without CUDA.
+
+    Passed through to `core_llm/config.py`'s `MAX_MEMORY` -- see that
+    module's own comment for the transformers bug (#47211) this routes
+    around: accelerate's automatic buffer sizing can cap every device too
+    small and collapse the whole model onto CPU/disk even when the combined
+    budget across cards is several times the model's actual size, and
+    bitsandbytes' 4-bit quantizer then refuses that outright. An explicit
+    `max_memory` skips that inference path.
+
+    `"cpu": "0GiB"` is deliberate, not an oversight: a model that genuinely
+    does not fit across the visible cards should fail with a plain CUDA OOM,
+    not silently spill onto CPU RAM and either hang for the rest of the run
+    or hit the same bitsandbytes refusal one layer later.
+    """
+    torch = bridge.torch_or_none()
+    if torch is None or not torch.cuda.is_available():
+        return None
+    memory = {}
+    for index in range(torch.cuda.device_count()):
+        free, _ = torch.cuda.mem_get_info(index)
+        usable_gb = max(free / 1024 ** 3 - reserve_gb, 0.0)
+        memory[index] = f"{usable_gb:.1f}GiB"
+    memory["cpu"] = "0GiB"
+    return memory
+
+
 class LocalLLM:
     """One local model, loaded at a given precision across a given card count.
 
@@ -241,23 +270,31 @@ class CoreLLMAdapter:
             self.load_seconds = time.perf_counter() - started
             return self
 
-        # Both knobs are set the same way and for the same reason: core_llm's
-        # classes read them off their own config module at load time rather
-        # than taking them as arguments (see `generate()` for the identical
-        # dance around MAX_NEW_TOKENS), so honouring the tier system's
-        # placement means setting them there and putting them back.
+        # All three knobs are set the same way and for the same reason:
+        # core_llm's classes read them off their own config module at load
+        # time rather than taking them as arguments (see `generate()` for
+        # the identical dance around MAX_NEW_TOKENS), so honouring the tier
+        # system's placement means setting them there and putting them back.
         original = {"DEVICE_MAP": core_config.DEVICE_MAP,
-                    "QUANTIZATION": getattr(core_config, "QUANTIZATION", None)}
+                    "QUANTIZATION": getattr(core_config, "QUANTIZATION", None),
+                    "MAX_MEMORY": getattr(core_config, "MAX_MEMORY", None)}
         if target is not None:
             core_config.DEVICE_MAP = target
         if self.precision in QUANTIZATION:
             core_config.QUANTIZATION = self.precision
+        # Only when sharding: a single-card load already has emptiest_cuda_device()
+        # picking a specific device, and an explicit max_memory there would
+        # just be a second, redundant way of saying the same thing.
+        if self.cards > 1 and hasattr(core_config, "MAX_MEMORY"):
+            core_config.MAX_MEMORY = _max_memory_for_sharding()
         try:
             self._core_model.load()
         finally:
             core_config.DEVICE_MAP = original["DEVICE_MAP"]
             if hasattr(core_config, "QUANTIZATION"):
                 core_config.QUANTIZATION = original["QUANTIZATION"]
+            if hasattr(core_config, "MAX_MEMORY"):
+                core_config.MAX_MEMORY = original["MAX_MEMORY"]
         self.load_seconds = time.perf_counter() - started
         return self
 

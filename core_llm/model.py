@@ -17,9 +17,9 @@ reusing one) and adding a ``MODEL_REGISTRY`` entry; nothing in main.py changes.
                        causal LM), but nothing in this codebase sends it an
                        image, so no image content is ever attached.
   Phi4MultimodalModel  Phi-4-multimodal-instruct. Text and audio, via
-                       Microsoft's own custom modeling code
-                       (trust_remote_code=True) rather than a standard
-                       transformers architecture.
+                       transformers' own native Phi4MultimodalForCausalLM
+                       (since v4.52.0) -- not trust_remote_code, unlike the
+                       version of this class that used to be here.
   VoxtralModel         Mistral Voxtral Mini 3B. Text and audio; the lightest
                        audio-in model here, and tokenized through
                        mistral-common rather than a Jinja template.
@@ -44,14 +44,12 @@ from abc import ABC, abstractmethod
 
 import torch
 from transformers import (
-    AutoConfig,
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
     AutoModelForMultimodalLM,
     AutoProcessor,
     AutoTokenizer,
     BitsAndBytesConfig,
-    GenerationConfig,
     Qwen2AudioForConditionalGeneration,
     Qwen3OmniMoeProcessor,
     Qwen3OmniMoeThinkerForConditionalGeneration,
@@ -98,10 +96,12 @@ def _quantization_config():
 def _load_kwargs(**extra) -> dict:
     """The `from_pretrained` kwargs every model class here shares.
 
-    One place, so a model added later cannot quietly ignore `DEVICE_MAP` or
-    `QUANTIZATION` the way each hand-written call site could.
+    One place, so a model added later cannot quietly ignore `DEVICE_MAP`,
+    `QUANTIZATION` or `MAX_MEMORY` the way each hand-written call site could.
     """
     kwargs = {"device_map": config.DEVICE_MAP, **extra}
+    if config.MAX_MEMORY is not None:
+        kwargs["max_memory"] = config.MAX_MEMORY
     quantization = _quantization_config()
     if quantization is not None:
         kwargs["quantization_config"] = quantization
@@ -352,107 +352,74 @@ class MedGemmaTextModel(BaseLLM):
         return text
 
 
-def _patch_sliding_window_cache():
-    """Restore an importable `SlidingWindowCache` name in
-    `transformers.cache_utils`, if the installed transformers removed it.
-
-    Idempotent and scoped to just that one name -- runs every time
-    Phi4MultimodalModel.load() does, cheap, and harmless to call again if
-    the name already exists (real or already patched).
-    """
-    import transformers.cache_utils as cache_utils
-
-    if not hasattr(cache_utils, "SlidingWindowCache"):
-        cache_utils.SlidingWindowCache = cache_utils.DynamicCache
-
-
 class Phi4MultimodalModel(BaseLLM):
-    """Phi-4-multimodal-instruct. Text and audio, via Microsoft's own custom
-    modeling code (trust_remote_code=True).
+    """Phi-4-multimodal-instruct, via transformers' own native
+    `Phi4MultimodalForCausalLM` -- NOT Microsoft's custom modeling code.
 
-    Confirmed live: the installed transformers has no native Phi-4-multimodal
-    support (omitting trust_remote_code produced an interactive "run custom
-    code? [y/N]" prompt, which hangs forever in a non-interactive notebook
-    cell -- there is no native path to fall back to here). So the vendor code
-    path is mandatory, which means its stale import has to be worked around
-    directly rather than avoided: `modeling_phi4mm.py` does
-    `from transformers.cache_utils import Cache, DynamicCache,
-    SlidingWindowCache, StaticCache`, and `SlidingWindowCache` was removed
-    from that module's public API in transformers v4.48.
+    This class used to load through `trust_remote_code=True`, and that path
+    is where five earlier rounds of fixes here all eventually failed: the
+    vendor's own `speech_conformer_encoder.py` computes a real value inside
+    `__init__` and calls `.item()` on it, which the meta-device fast-init
+    every `from_pretrained()` call now uses by default cannot do
+    ("RuntimeError: Tensor.item() cannot be called on meta tensors",
+    confirmed live), and `low_cpu_mem_usage=False` -- the standard fix for
+    exactly that error -- did not change the outcome. That was a genuine
+    dead end in the vendor's own code, not something fixable from a caller's
+    `from_pretrained()` kwargs.
 
-    Patched in, not pinned: downgrading transformers globally to get
-    SlidingWindowCache back risks breaking every other model in this file,
-    several of which need a fairly recent transformers already (MedGemma's
-    "fast" image processor, Gemma 4's AutoModelForMultimodalLM). Instead,
-    `_patch_sliding_window_cache()` aliases `SlidingWindowCache` to
-    `DynamicCache` (unbounded, not size-limited the way a real sliding
-    window is) only if the name is missing, only in this process, before the
-    vendor file ever imports it -- enough for the import itself to succeed.
-    Correctness caveat: if Phi-4-multimodal's forward pass actually depends
-    on sliding-window *behaviour* (not just the class existing), this is a
-    functional approximation, not a faithful implementation -- worth
-    revisiting if generation quality looks off specifically for this model.
+    What actually resolves it: Phi-4-Multimodal has had first-class support
+    in `transformers` itself since v4.52.0 (2025-03-25) --
+    `Phi4MultimodalForCausalLM`, `Phi4MultimodalAudioModel`, and a real
+    `speech_conformer_encoder` reimplementation that transformers' own
+    maintainers wrote to be meta-init-safe, the same way every other native
+    model in this file already is. `trust_remote_code` is not needed at all
+    once a checkpoint has this: the buggy vendor file is never imported.
+    This project's `transformers>=5.5.0` floor (needed for Gemma 4) is
+    comfortably past v4.52.0, so nothing else in this file's version
+    requirements is in tension with using the native path here too.
+
+    One extra step the native docs are explicit about and easy to miss:
+    the base checkpoint's speech capability lives in a separate LoRA adapter
+    (`speech-lora`, a subfolder of the same repo), not the base weights --
+    `load_adapter()` + `set_adapter()` below, mirroring the reference
+    example in transformers' own `phi4_multimodal` model doc.
     """
 
     supports_audio = True
 
     def load(self):
-        _patch_sliding_window_cache()
-        self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
-        # The checkpoint's own config defaults to flash_attention_2, which
-        # needs the flash_attn package -- slow to build on Kaggle (CUDA/torch
-        # version matching, long compile) and not installed. Passing
-        # attn_implementation= directly to from_pretrained() did not
-        # override it (confirmed live: identical error either way) -- this
-        # custom model's config class evidently does not honour that kwarg
-        # the standard way. Forcing it on a pre-loaded AutoConfig instead,
-        # before the model ever sees it, is the more direct path. "eager"
-        # rather than "sdpa": this custom architecture's own attention class
-        # may not have a working SDPA path registered, since trust_remote_code
-        # repos don't always implement every backend transformers supports --
-        # eager needs no optimized kernel at all, so it works regardless.
-        model_config = AutoConfig.from_pretrained(self.model_id, trust_remote_code=True)
-        model_config._attn_implementation = "eager"
-        # No device_map here, deliberately: transformers' default
-        # from_pretrained() path constructs the model on the meta device
-        # first (real allocation deferred until weights load, the standard
-        # fast-init transformers/accelerate use for every model now) --
-        # fine for ordinary modules, but this checkpoint's own
-        # speech_conformer_encoder.py computes a real value inside __init__
-        # and calls .item() on it, which meta tensors cannot do
-        # ("Tensor.item() cannot be called on meta tensors", confirmed
-        # live). low_cpu_mem_usage=False disables that fast-init path, but
-        # recent transformers raises if device_map and
-        # low_cpu_mem_usage=False are passed together -- so device_map is
-        # dropped here and the whole model is moved to the target device
-        # afterward instead, once real (non-meta) weights exist to move.
+        self._processor = AutoProcessor.from_pretrained(self.model_id)
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, config=model_config, dtype="auto",
-            trust_remote_code=True, low_cpu_mem_usage=False,
-        ).to(config.DEVICE_MAP)
-        self._generation_config = GenerationConfig.from_pretrained(self.model_id)
+            self.model_id, **_load_kwargs(attn_implementation="sdpa")
+        )
+        self._model.load_adapter(self.model_id, adapter_name="speech",
+                                 device_map=config.DEVICE_MAP,
+                                 adapter_kwargs={"subfolder": "speech-lora"})
+        self._model.set_adapter("speech")
 
     def chat(self, messages, audio_path=None, temperature=0.3):
-        import soundfile as sf
-
         last_user = _last_user_index(messages) if audio_path else -1
-        prompt_parts = []
+        converted = []
         for i, m in enumerate(messages):
-            text = m["content"]
+            if m["role"] == "system":
+                converted.append({"role": "system", "content": m["content"]})
+                continue
+            content = [{"type": "text", "text": m["content"]}]
             if audio_path and i == last_user:
-                text = f"<|audio_1|>{text}"
-            prompt_parts.append(f"<|{m['role']}|>{text}<|end|>")
-        prompt = "".join(prompt_parts) + "<|assistant|>"
+                # str(), not the Path itself -- see GemmaAudioModel's own
+                # comment: the processor accepts a numpy array or a string
+                # (URL, local path, base64), not a pathlib.Path.
+                content.append({"type": "audio", "url": str(audio_path)})
+            converted.append({"role": m["role"], "content": content})
 
-        audios = [sf.read(audio_path)] if audio_path else None
-        inputs = self._processor(text=prompt, audios=audios, return_tensors="pt").to(
-            self._model.device)
+        inputs = self._processor.apply_chat_template(
+            converted, tokenize=True, add_generation_prompt=True,
+            return_dict=True, return_tensors="pt",
+        ).to(self._model.device)
         input_len = inputs["input_ids"].shape[-1]
         with torch.no_grad():
-            outputs = self._model.generate(
-                **inputs, max_new_tokens=config.MAX_NEW_TOKENS,
-                generation_config=self._generation_config,
-                **_generation_kwargs(temperature))
+            outputs = self._model.generate(**inputs, max_new_tokens=config.MAX_NEW_TOKENS,
+                                           **_generation_kwargs(temperature))
         return self._processor.batch_decode(
             outputs[:, input_len:], skip_special_tokens=True,
             clean_up_tokenization_spaces=False)[0]

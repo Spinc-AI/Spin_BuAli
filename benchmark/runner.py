@@ -58,21 +58,12 @@ TOP3_STT = [
 # despite the "E4B" name -- its "4B" refers to effective compute, not the
 # on-disk parameter count.
 #
-# phi-4-multimodal is deliberately absent, from both this list and
-# MULTIMODAL_LLM below. Its checkpoint remains registered in
-# core_llm/model.py (Phi4MultimodalModel) for whoever eventually resolves
-# this, but it cannot currently load at all: confirmed live across five
-# rounds of real fixes (missing pip deps, a stale SlidingWindowCache import,
-# a from_pretrained kwarg the checkpoint's config class silently ignores, a
-# flash_attn dependency worked around via eager attention) that all
-# succeeded in turn, ending on "RuntimeError: Tensor.item() cannot be
-# called on meta tensors" inside the vendor's own
-# speech_conformer_encoder.py -- its __init__ does real tensor computation,
-# which is incompatible with the meta-device fast-init transformers uses by
-# default, and low_cpu_mem_usage=False (the standard fix for exactly that
-# error) did not change the outcome. That is a structural mismatch between
-# this checkpoint's custom code and the installed transformers version, not
-# something fixable from a caller's from_pretrained() kwargs.
+# phi-4-multimodal is deliberately absent -- not because it can't load
+# (that was fixed; see MULTIMODAL_LLM's own comment below), but because
+# this roster is capped at three by design (TOP3_LLM) and separate never
+# needs audio capability in the first place, so there is no reason to
+# prefer a 5.6B audio-capable model here over the three already chosen for
+# being the lightest text-only options.
 TOP3_LLM = [
     "medgemma-1.5-4b",  # 4.3B  -> ~8.6 GB
     "gemma-4-e4b",       # 7.85B -> ~15.7 GB
@@ -84,37 +75,48 @@ TOP3_LLM = [
 # the LLM, so text-only models (medgemma-1.5-4b, aya-expanse-8b) cannot run
 # here at all and the roster is not the same as TOP3_LLM.
 #
-# Five families, deliberately: Mistral, Google, Alibaba. Sharing one vendor's
-# audio front-end across every row would make a family-wide weakness look
-# like a property of the task.
+# Four vendor families, deliberately: Mistral, Google, Alibaba, Microsoft.
+# Sharing one vendor's audio front-end across every row would make a
+# family-wide weakness look like a property of the task.
 #
-# phi-4-multimodal would sit second in this list by weight and is excluded
-# for the reason documented above TOP3_LLM.
+# phi-4-multimodal was excluded once, across five rounds of failed fixes,
+# all against the wrong target: `core_llm/model.py`'s Phi4MultimodalModel
+# used to load through Microsoft's own custom modeling code
+# (trust_remote_code=True), and that code's speech_conformer_encoder.py
+# computes a real value inside __init__ and calls .item() on it -- which the
+# meta-device fast-init every from_pretrained() uses by default cannot do,
+# and low_cpu_mem_usage=False (the standard fix for exactly that error) did
+# not change the outcome. A genuine dead end in the vendor's own code, not
+# fixable from caller-side kwargs. The actual fix: transformers has shipped
+# a native Phi4MultimodalForCausalLM (no trust_remote_code, no vendor file,
+# a real meta-init-safe reimplementation of that same encoder) since v4.52.0
+# -- comfortably below this project's own transformers>=5.5.0 floor.
+# Phi4MultimodalModel now uses that native path; see its own class
+# docstring in core_llm/model.py for the full story.
 #
-# qwen3-omni-30b is ALSO excluded, for a live-confirmed reason of its own:
-# nf4 across two cards routes through accelerate's device_map="auto", which
-# bin-packs module-by-module rather than reasoning about total free memory --
-# and Qwen3-Omni's Thinker carries real weight outside the quantized language
-# model (an audio encoder, embeddings) that "auto" tried to place on
-# whichever card had room left, came up short on both, and dispatched the
-# remainder to CPU. bitsandbytes' 4-bit quantizer refuses that outright:
+# qwen3-omni-30b was excluded once, for a reason since fixed rather than
+# worked around: nf4 across two cards with a bare device_map="auto" and no
+# explicit max_memory hit
 #
 #   ValueError: Some modules are dispatched on the CPU or the disk. Make
 #   sure you have enough GPU RAM to fit the quantized model...
 #
-# That raised cleanly. What actually cost a live Kaggle session a hard reload
-# was upstream of it -- see core_llm/model.py's _quantization_config for the
-# bitsandbytes logging-spam bug this shares with gemma-4-12b, now fixed
-# there. The device_map failure above is unrelated and still open: it needs
-# either a hand-built device_map (not "auto") or more GPU than 2x16 GB, and
-# guessing at one from here without a live card to test against is how
-# phi-4-multimodal cost five rounds of failed fixes. Left registered in
-# core_llm/model.py for whoever picks it up with hardware to iterate on.
+# This is a known transformers/accelerate bug (huggingface/transformers
+# #47211): a single large leaf module that doesn't fit the buffer "auto"
+# reserves per-device caps EVERY device too small, collapsing the whole
+# model onto CPU/disk even though 27 GB combined is well over the ~17.5 GB
+# nf4 needs. `llm.CoreLLMAdapter.load()` now passes an explicit
+# `max_memory` (via `core_llm/config.py`'s `MAX_MEMORY`) whenever `cards >
+# 1`, which routes around that inference path entirely -- see
+# `_max_memory_for_sharding()`'s own comment in `benchmark/llm.py`. Not
+# re-verified live yet; this is what to look at first if it still fails.
 MULTIMODAL_LLM = [
     "voxtral-mini-3b",   # 4.7B  -> ~10.8 GB   fp16, one card
+    "phi-4-multimodal",  # 5.6B  -> ~12.9 GB   fp16, one card
     "gemma-4-e4b",       # 7.85B -> ~18.1 GB   fp16, two cards
     "qwen2-audio-7b",    # 8.4B  -> ~19.3 GB   fp16, two cards
     "gemma-4-12b",       # 12B   -> ~13.8 GB   int8, two cards
+    "qwen3-omni-30b",    # 30.5B -> ~17.5 GB   nf4,  two cards
 ]
 
 

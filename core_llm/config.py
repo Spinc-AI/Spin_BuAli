@@ -51,3 +51,19 @@ DEVICE_MAP = os.getenv("DEVICE_MAP", "cuda")
 # was silently ignored: the model loaded at full precision, OOMed, and still
 # stamped its results "int8", which is a wrong row rather than a failed one.
 QUANTIZATION = os.getenv("QUANTIZATION") or None
+
+# An explicit per-device memory budget for device_map="auto", or None to let
+# accelerate infer one on its own (the service's default -- it never shards
+# across more than one card). The benchmark sets this per run for cards > 1;
+# see benchmark/llm.py's CoreLLMAdapter.load() for why: accelerate's own
+# inference has a known bug (tracked as huggingface/transformers#47211) where
+# a single large leaf module (a big embedding table, say) that doesn't fit
+# the conservative per-device buffer "auto" reserves caps EVERY device too
+# small, collapsing the whole model onto CPU/disk -- and bitsandbytes' 4-bit
+# quantizer then refuses that outright ("Some modules are dispatched on the
+# CPU or the disk"), even when the combined budget across cards is several
+# times the model's actual size. Confirmed live: qwen3-omni-30b hit exactly
+# this on 2x T4 (27 GB combined, ~17.5 GB estimated at nf4) with no explicit
+# max_memory. A dict of {device_index_or_"cpu": "<N>GiB"} bypasses that
+# inference path entirely.
+MAX_MEMORY = None

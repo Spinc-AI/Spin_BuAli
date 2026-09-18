@@ -61,14 +61,14 @@ class TestTop3:
         assert len(runner.TOP3_LLM) == 3
         assert len(set(runner.TOP3_LLM)) == 3
         assert len(set(runner.MULTIMODAL_LLM)) == len(runner.MULTIMODAL_LLM)
-        # phi-4-multimodal would sit second in MULTIMODAL_LLM by weight and is
-        # excluded from both rosters -- confirmed unloadable on this
-        # environment across five rounds of real fixes, ending on a
-        # meta-tensor incompatibility in its own vendor code that no
-        # from_pretrained() kwarg can work around. See runner.py's comment
-        # above TOP3_LLM for the full history.
+        # phi-4-multimodal is back in MULTIMODAL_LLM (its load-blocking bug
+        # is fixed -- native transformers support, not trust_remote_code;
+        # see runner.py's comment above MULTIMODAL_LLM) but deliberately
+        # stays out of TOP3_LLM, which is capped at three by design and
+        # never needed audio capability to begin with -- see runner.py's
+        # comment above TOP3_LLM.
         assert "phi-4-multimodal" not in runner.TOP3_LLM
-        assert "phi-4-multimodal" not in runner.MULTIMODAL_LLM
+        assert "phi-4-multimodal" in runner.MULTIMODAL_LLM
         for key in runner.TOP3_LLM + runner.MULTIMODAL_LLM:
             assert llm_module._hugging_face_id(key)  # raises LoadFailed if unknown
 

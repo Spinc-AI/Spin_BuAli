@@ -43,6 +43,7 @@ class StubCoreModel:
         self.seen_at_load = {
             "DEVICE_MAP": self._core_llm_config.DEVICE_MAP,
             "QUANTIZATION": getattr(self._core_llm_config, "QUANTIZATION", "<absent>"),
+            "MAX_MEMORY": getattr(self._core_llm_config, "MAX_MEMORY", "<absent>"),
         }
 
     def chat(self, messages, audio_path=None, temperature=0.3):
@@ -52,22 +53,25 @@ class StubCoreModel:
         self.loaded = False
 
 
-def core_config(quantization_knob=True):
+def core_config(quantization_knob=True, max_memory_knob=True):
     """A stand-in for `core_llm/config.py`.
 
-    `quantization_knob=False` is an older core_llm without the knob at all --
-    exactly the state this repo was in when run 11 was recorded.
+    `quantization_knob=False` is an older core_llm without that knob at all
+    -- exactly the state this repo was in when run 11 was recorded.
+    `max_memory_knob=False` is the same idea for `MAX_MEMORY`.
     """
     module = types.ModuleType("stub_core_config")
     module.DEVICE_MAP = "cuda"
     module.MAX_NEW_TOKENS = 2048
     if quantization_knob:
         module.QUANTIZATION = None
+    if max_memory_knob:
+        module.MAX_MEMORY = None
     return module
 
 
-def adapter(precision, cards=1, quantization_knob=True):
-    config = core_config(quantization_knob)
+def adapter(precision, cards=1, quantization_knob=True, max_memory_knob=True):
+    config = core_config(quantization_knob, max_memory_knob)
     stub = StubCoreModel(config)
     return llm_module.CoreLLMAdapter("stub-model", stub, precision=precision,
                                      cards=cards), stub, config
@@ -110,6 +114,56 @@ class TestThePlacementIsApplied:
             built.load()
         assert config.DEVICE_MAP == "cuda"
         assert config.QUANTIZATION is None
+
+
+class TestMaxMemoryForSharding:
+    """The qwen3-omni-30b fix: a bare `device_map="auto"` with no explicit
+    `max_memory` hit a known transformers/accelerate bug (#47211) where a
+    single large leaf module collapses the whole device_map onto CPU/disk
+    even when combined GPU budget is several times the model's size, and
+    bitsandbytes' 4-bit quantizer then refuses that outright. An explicit
+    `max_memory` (this adapter's own `_max_memory_for_sharding()`) routes
+    around it.
+    """
+
+    def test_two_cards_sets_an_explicit_max_memory(self, monkeypatch):
+        monkeypatch.setattr(llm_module, "_max_memory_for_sharding",
+                            lambda: {0: "13.5GiB", 1: "13.5GiB", "cpu": "0GiB"})
+        built, stub, _ = adapter("nf4", cards=2)
+        built.load()
+        assert stub.seen_at_load["MAX_MEMORY"] == {0: "13.5GiB", 1: "13.5GiB", "cpu": "0GiB"}
+
+    def test_a_single_card_load_leaves_max_memory_alone(self):
+        """emptiest_cuda_device() already picks a specific device for a
+        single-card load -- an explicit max_memory there would be a second,
+        redundant way of saying the same thing, not a fix for anything."""
+        built, stub, _ = adapter("nf4", cards=1)
+        built.load()
+        assert stub.seen_at_load["MAX_MEMORY"] is None
+
+    def test_max_memory_is_restored_after_a_sharded_load(self, monkeypatch):
+        monkeypatch.setattr(llm_module, "_max_memory_for_sharding",
+                            lambda: {0: "13.5GiB", "cpu": "0GiB"})
+        built, _, config = adapter("nf4", cards=2)
+        built.load()
+        assert config.MAX_MEMORY is None
+
+    def test_max_memory_is_restored_even_when_the_load_fails(self, monkeypatch):
+        monkeypatch.setattr(llm_module, "_max_memory_for_sharding",
+                            lambda: {0: "13.5GiB", "cpu": "0GiB"})
+        built, stub, config = adapter("nf4", cards=2)
+        stub.load = lambda: (_ for _ in ()).throw(RuntimeError("no weights here"))
+        with pytest.raises(RuntimeError):
+            built.load()
+        assert config.MAX_MEMORY is None
+
+    def test_an_older_core_llm_without_the_knob_still_loads(self):
+        """Same graceful-degradation shape as the QUANTIZATION knob: a
+        core_llm build that predates MAX_MEMORY should still serve a
+        sharded load, just without the #47211 workaround."""
+        built, stub, _ = adapter("nf4", cards=2, max_memory_knob=False)
+        built.load()
+        assert stub.loaded
 
 
 class TestAnUnapplicablePlacementFailsLoudly:
@@ -242,15 +296,17 @@ class TestRouting:
         for key in runner.MULTIMODAL_LLM + runner.TOP3_LLM:
             assert key in plan.LLM_PARAMS
 
-    def test_qwen3_omni_stays_out_of_the_default_roster(self):
-        """Live-confirmed: nf4 across two cards routes through
-        device_map="auto", which dispatched part of the Thinker's
-        non-quantized weight to CPU, and bitsandbytes' 4-bit quantizer
-        refuses that outright (`ValueError: Some modules are dispatched on
-        the CPU or the disk...`). Still registered in core_llm/model.py and
-        still in plan.AUDIO_CAPABLE for whoever solves the device_map -- just
-        not run by default until someone does. See runner.py's comment above
-        MULTIMODAL_LLM for the full trace."""
+    def test_qwen3_omni_is_back_in_the_default_roster(self):
+        """Was excluded for a real, now-fixed reason: nf4 across two cards
+        with a bare device_map="auto" and no explicit max_memory hit
+        `ValueError: Some modules are dispatched on the CPU or the disk...`
+        -- a known transformers/accelerate bug (#47211) where a single large
+        leaf module collapses the whole device_map onto CPU/disk even when
+        combined GPU budget is ample. CoreLLMAdapter.load() now passes an
+        explicit max_memory whenever cards > 1 (see
+        TestMaxMemoryForSharding below and llm._max_memory_for_sharding),
+        which routes around that inference path. Re-included on the strength
+        of that fix; not yet re-verified against a live card."""
         import runner
 
-        assert "qwen3-omni-30b" not in runner.MULTIMODAL_LLM
+        assert "qwen3-omni-30b" in runner.MULTIMODAL_LLM

@@ -407,9 +407,9 @@ first:
 
 {chr(10).join(f"* `{k}`" for k in runner.MULTIMODAL_LLM)}
 
-Three vendors on purpose (Mistral, Google, Alibaba). One vendor's audio
-front-end across every row would make a family-wide weakness look like a
-property of the task.
+Four vendors on purpose (Mistral, Google, Alibaba, Microsoft). One vendor's
+audio front-end across every row would make a family-wide weakness look like
+a property of the task.
 
 **Precision comes from cell 3's tier table, and is now actually applied.**
 Previously a model placed at `int8` still loaded at full precision — the
@@ -417,13 +417,27 @@ adapter stored the placement and never used it — so gemma-4-12b put ~24 GB of
 fp16 weights onto a 14.56 GB card, failed, and stamped the CSV `int8` anyway.
 A placement that cannot be honoured now raises instead.
 
-**`phi-4-multimodal` is deliberately absent.** It cannot currently load on
-this environment — confirmed across five rounds of real fixes (missing pip
-deps, a stale import, a `from_pretrained` kwarg its own config class ignores,
-a `flash_attn` dependency worked around via eager attention), ending on a
-meta-tensor incompatibility inside its own vendor code that no caller-side fix
-resolves. Its checkpoint stays registered in `core_llm/model.py` for whoever
-eventually resolves this; see `runner.py`'s comment above `TOP3_LLM`.
+**`phi-4-multimodal` and `qwen3-omni-30b` are both back**, after being
+dropped earlier in this project. Neither exclusion was permanent — both had
+a real, root-caused reason, and both reasons are now fixed rather than
+worked around:
+
+* `phi-4-multimodal` used to load through Microsoft's own custom modeling
+  code (`trust_remote_code=True`), whose `speech_conformer_encoder.py` did
+  real tensor computation inside `__init__` that the meta-device fast-init
+  every `from_pretrained()` uses could not tolerate. `core_llm/model.py`'s
+  `Phi4MultimodalModel` now loads through transformers' own native
+  `Phi4MultimodalForCausalLM` instead (shipped since v4.52.0) — no vendor
+  file, no meta-tensor crash.
+* `qwen3-omni-30b` hit a known transformers/accelerate bug
+  (huggingface/transformers#47211): `device_map="auto"` with no explicit
+  `max_memory` could collapse the whole device_map onto CPU/disk even when
+  combined GPU budget was several times the model's size, which
+  bitsandbytes' 4-bit quantizer then refused outright. `llm.CoreLLMAdapter`
+  now passes an explicit `max_memory` whenever a run shards across cards.
+
+Neither fix has been re-verified against a live GPU yet — that is what
+these two cells are for.
 
 **{len(runner.MULTIMODAL_LLM)} runs, {len(runner.MULTIMODAL_LLM)} cells.**
 
@@ -448,7 +462,14 @@ a kernel restart will clear it -- the cell says so when it happens.
 _llm_comment = {
     "voxtral-mini-3b":
         "mistralai/Voxtral-Mini-3B-2507 — 4.7B. A Whisper-large-v3 encoder in "
-        "front of Ministral 3B. The only model here that fits one card at fp16.",
+        "front of Ministral 3B. The lightest model here, fits one card at fp16.",
+    "phi-4-multimodal":
+        "microsoft/Phi-4-multimodal-instruct — 5.6B. Loads through "
+        "transformers' native Phi4MultimodalForCausalLM (since v4.52.0), "
+        "not the trust_remote_code path that used to make this unloadable "
+        "here across five earlier rounds of fixes. Speech capability comes "
+        "from a separate LoRA adapter (speech-lora) the loader activates "
+        "automatically.",
     "gemma-4-e4b":
         "google/gemma-4-E4B-it — 7.85B, encoder-free (\"Unified\") audio. The "
         "\"E4B\" is effective compute, not the on-disk parameter count.",
